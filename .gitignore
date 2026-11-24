@@ -1,0 +1,34 @@
+# Binaries and build output
+/hami-media
+/hami-media.exe
+*.exe
+*.test
+*.out
+
+# Go workspace files
+go.work
+go.work.sum
+
+# Test artefacts
+*.prof
+*.pprof
+cpu.prof
+heap.prof
+*.jsonl
+/tmp/
+
+# Editor and OS files
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*~
+
+# Local secrets — never commit these
+*.key
+*.pem
+*.p12
+hmac-key.txt
+turn-password.txt
+.env
