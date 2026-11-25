@@ -1,0 +1,46 @@
+{
+  "benchmarks": {
+    "BenchmarkCopyRTPPacketWithSharedPayload": {
+      "allocs_per_op": 1.0,
+      "bytes_per_op": 4.0,
+      "iterations": 3751068,
+      "ns_per_op": 270.8
+    },
+    "BenchmarkEnqueueRTP": {
+      "allocs_per_op": 0.0,
+      "bytes_per_op": 513.0,
+      "iterations": 166951,
+      "ns_per_op": 14994.0
+    }
+  },
+  "code_sha256_main_go": "9b253fafc2a73a251101fd4435c98ec2c6e17b0f07d94594b6d918b2294fd19a",
+  "exit_code": 0,
+  "hardware": {
+    "cpu_cores": 4,
+    "cpu_model": "AMD EPYC 9D25 126-Core Processor",
+    "go_version": "go version go1.27.4 linux/amd64",
+    "kernel": "7.0.0-44-generic",
+    "main_go_sha256": "9b253fafc2a73a251101fd4435c98ec2c6e17b0f07d94594b6d918b2294fd19a",
+    "mem_total_mib": 7934,
+    "network_interfaces": "lo:127.0.0.1/8,host0@if3:198.19.0.2/30",
+    "os": "Ubuntu 24.04.5 LTS",
+    "swap_total_mib": 1023
+  },
+  "image_hash": "n/a-native",
+  "parameters": {
+    "benchtime": "1s",
+    "count": 1
+  },
+  "preflight_log": "bench-20261125-081224-9b253faf.preflight.log",
+  "raw_log": "bench-20261125-081224-9b253faf.log",
+  "raw_logs": [
+    "bench-20261125-081224-9b253faf.log",
+    "bench-20261125-081224-9b253faf.preflight.log"
+  ],
+  "schema": "hami-media-benchmark/1",
+  "status": "pass",
+  "trial_id": "bench-20261125-081224-9b253faf",
+  "trial_ids": [
+    "bench-20261125-081224-9b253faf"
+  ]
+}

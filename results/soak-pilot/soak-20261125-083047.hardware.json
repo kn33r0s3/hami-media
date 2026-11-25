@@ -1,0 +1,11 @@
+{
+  "cpu_cores": 4,
+  "cpu_model": "AMD EPYC 9D25 126-Core Processor",
+  "go_version": "go version go1.27.4 linux/amd64",
+  "kernel": "7.0.0-44-generic",
+  "main_go_sha256": "9b253fafc2a73a251101fd4435c98ec2c6e17b0f07d94594b6d918b2294fd19a",
+  "mem_total_mib": 7934,
+  "network_interfaces": "lo:127.0.0.1/8,host0@if3:198.19.0.2/30",
+  "os": "Ubuntu 24.04.5 LTS",
+  "swap_total_mib": 1023
+}

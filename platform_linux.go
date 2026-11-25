@@ -117,7 +117,7 @@ func readProcSysUint64(path string) (uint64, error) {
 func readSFUHostSnapshot() (sfuHostSnapshot, error) {
 	snapshot := sfuHostSnapshot{ObservedAt: time.Now().UTC()}
 	var err error
-	snapshot.SwapUsedMiB, snapshot.SwapFreeMiB, err = readAudioSwapMiB()
+	snapshot.SwapUsedMiB, snapshot.SwapFreeMiB, err = readSwapMiBChecked()
 	if err != nil {
 		return snapshot, err
 	}
@@ -156,7 +156,7 @@ func readSFUHostSnapshotLive(baseline sfuHostSnapshot) (sfuHostSnapshot, error) 
 	snapshot := baseline
 	snapshot.ObservedAt = time.Now().UTC()
 	var err error
-	snapshot.SwapUsedMiB, snapshot.SwapFreeMiB, err = readAudioSwapMiB()
+	snapshot.SwapUsedMiB, snapshot.SwapFreeMiB, err = readSwapMiBChecked()
 	if err != nil {
 		return snapshot, err
 	}
@@ -213,4 +213,23 @@ func readVMStatCounter(key string) (uint64, error) {
 		return value, nil
 	}
 	return 0, fmt.Errorf("/proc/vmstat has no %s key", key)
+}
+
+// readProcessRSSBytes returns the current process's resident set size
+// in bytes, from /proc/self/statm (field 2, resident pages × page
+// size).
+func readProcessRSSBytes() (uint64, error) {
+	data, err := os.ReadFile("/proc/self/statm")
+	if err != nil {
+		return 0, fmt.Errorf("read /proc/self/statm: %w", err)
+	}
+	fields := strings.Fields(string(data))
+	if len(fields) < 2 {
+		return 0, fmt.Errorf("/proc/self/statm has %d fields, want >= 2", len(fields))
+	}
+	residentPages, err := strconv.ParseUint(fields[1], 10, 64)
+	if err != nil {
+		return 0, fmt.Errorf("parse /proc/self/statm resident %q: %w", fields[1], err)
+	}
+	return residentPages * uint64(os.Getpagesize()), nil
 }

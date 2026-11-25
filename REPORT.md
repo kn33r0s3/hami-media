@@ -1,23 +1,22 @@
 # hami-media — Full Report (A to Z)
 
-**Date:** 24 Nov 2026, ~23:50 NPT; updated 25 Nov 2026 ~01:50 NPT; corrected 25 Nov 2026 ~02:05 NPT (U10).
-**Repo:** `[local path redacted]`, module
+**Date:** 24 Nov 2026, ~23:50 NPT; updated 25 Nov 2026 ~01:50 NPT; corrected 25 Nov 2026 ~02:05 NPT (U10); updated 25 Nov 2026 ~02:55 NPT (scale re-checks, stall evidence, swap redo, publication-safety scrub).
+**Repo:** `hami-media/`, module
 `github.com/kn33r0s3/hami-media`, LICENSE Apache-2.0.
 **Status of this report:** every number below comes from a log, doc, or
 result note I read while writing it. Sources are cited by path in
 section 9. Where a result does not exist, this report says so instead
-of inventing one. Nothing here is committed or pushed; that is Niroj's
+of inventing one. Nothing here is committed or pushed; that is the maintainer's
 terminal action.
 
 **One-line summary:** hami-media is a self-hosted WebRTC video SFU
 (one room, H.264) with per-user HMAC auth, NACK lost-frame recovery,
 a standalone TURN relay, a host-health preflight and watchdog, and an
-auto capacity detector. Measured on Niroj's Mac (Apple M5, 10 cores,
+auto capacity detector. Measured on the reference machine (Apple M5, 10 cores,
 24 GiB RAM): 20 publishers x 5,000 viewers PASS strict once;
-20 x 7,500 PASS strict three times; 20 x 8,000 PASS strict (T0–T4
-+ FINAL + verify, §4.5); 20 x 10,000 FAILS systematically at the
-macOS kernel loopback wall, not in this code. 10 x 6,000 is
-BLOCKED, never started, no numbers exist.
+20 x 7,500 PASS strict three times; 20 x 8,000 PASS strict (six runs: T0, T1, T4, FINAL,
+verify-s005 and stall-capture; T2/T3 failed on frames, §4.5/§4.8); 20 x 10,000 FAILS systematically at the
+macOS kernel loopback wall, not in this code. 10 x 6,000 is NOT YET RUN — QUEUED; no numbers exist.
 
 ## Contents
 
@@ -61,19 +60,19 @@ on your own computer. No cloud service is needed. (README.md opening.)
 
 | File | Size | sha256 (verified, detector version) |
 |---|---|---|
-| `main.go` | 548,904 B | `c8feddf90496825758ac2eebb9241f852c40ffd2bee416775e3bfb014386d489` |
-| `capacity.go` (new) | 17,584 B | `ffbbd04e92243de5cc9ded69454b2cd8971455caa25ad71a547d527cbd4f2a09` |
-| `capacity_test.go` (new) | 13,740 B | `f59e354f0cfb17da45a2b0e5b9fdd88a85324dd5530d72d82f6fedb9ed6d7d41` |
-| `platform_darwin.go` | 8,053 B | `6802542ee673015f37589eb9b4aeeda0fc386bec33691d881a5b6dbe68a393a6` |
-| `platform_linux.go` | 7,623 B | `74026d858fc36977ef78245b651fdb1583fe2f116a0a7d1f05d8d1760917e2af` |
-| `platform_windows.go` | 2,203 B | `dd84d43188a25faccf3dab8146b3cee6c86497f48f6b320f2c2829100bddb7a0` |
-| `auth_test.go` | 14,336 B | `bcd3d7d6080c9ee93e14a09e1ea7c68ea9279e8772a2faa8709cde98fb06d7f4` |
-| `go.mod` (renamed module) | 936 B | `1036f6762decbe4e7ea2c3d4aab3dc41ecd3c87e266a82b608bbf689ff453320` |
-| `go.sum` | 3,938 B | `e86cb630ca4cc9ae52ff0e86d0dce8c48d697a107bb99b664b18c51057265007` |
-| `README.md` | 5,942 B | `dd5d17ad3385292b576b02e222cf224e9eeef84cd96ad2d1030cf998fb183a4b` |
-| `LICENSE` (Apache-2.0) | 11,334 B | `e7e2b21545835563b275a809484b564b90faf57ee6125861cf16161d8506f948` |
-| `docs/capacity.md` | 5,920 B | `d4311d609a4e24a87bea8060597f143374f52188fedb7541607da043e688e305` |
-| `docs/configuration.md` | 5,420 B | `e9f55eef90cacf99d203aec0b29fbb4bb1abb1a35aea43dd43b73dad08b7b0df` |
+| `main.go` | 548,904 B | `c8feddf9…` |
+| `capacity.go` (new) | 17,584 B | `ffbbd04e…` |
+| `capacity_test.go` (new) | 13,740 B | `f59e354f…` |
+| `platform_darwin.go` | 8,053 B | `6802542e…` |
+| `platform_linux.go` | 7,623 B | `74026d85…` |
+| `platform_windows.go` | 2,203 B | `dd84d431…` |
+| `auth_test.go` | 14,336 B | `bcd3d7d6…` |
+| `go.mod` (renamed module) | 936 B | `1036f676…` |
+| `go.sum` | 3,938 B | `e86cb630…` |
+| `README.md` | 5,942 B | `dd5d17ad…` |
+| `LICENSE` (Apache-2.0) | 11,334 B | `e7e2b215…` |
+| `docs/capacity.md` | 5,920 B | `d4311d60…` |
+| `docs/configuration.md` | 5,420 B | `e9f55eef…` |
 
 Other files (sizes from the repo listing): `auth.go` 12,831 B,
 `turn.go` 10,632 B, `latency.go` 10,373 B, `main_test.go` 91,695 B,
@@ -301,7 +300,9 @@ readers (`platform_darwin.go`, `platform_linux.go`,
 `platform_windows.go` honest stub that errors, never fakes numbers).
 
 **What it reads:** CPU model + cores, total RAM, swap (reused
-`readAudioSwapMiB`), RLIMIT_NOFILE soft/hard, system-wide file cap,
+`readSwapMiBChecked`, the shared checked reader — a twice-zero
+total fails closed, never healthy), RLIMIT_NOFILE soft/hard,
+system-wide file cap,
 UDP buffer ceilings, OS/kernel, NIC list. Darwin reads via syscalls
 only (no subprocess — the FIX 30 rule: a startup detector must not
 fork). Linux reads `/proc`. Fields a platform cannot read stay zero
@@ -312,10 +313,13 @@ Only PASSING rows feed the maxima:
 
 | Publishers | Viewers (total) | Result | Runs |
 |---|---|---|---|
-| 20 | 5,000 | pass | 1 |
-| 20 | 7,500 | pass | 3 |
-| 20 | 8,000 | pass | 5 (T0, T1, T4, FINAL, verify-s005 — §4.5; T2/T3 failed on frames, see §4.5) |
-| 20 | 10,000 | fail | — (systematic, macOS kernel loopback limit, NOT a code limit) |
+| 20 | 5,000 | pass | 3 (f31rev1 step-3 §4.2; probe-20x5000 §4.8; mid-media-20x5000 §4.8) |
+| 20 | 6,000 | pass | 1 (probe-20x6000, §4.8) |
+| 20 | 7,000 | pass | 1 (probe-20x7000, §4.8) |
+| 20 | 7,200 | pass | 1 (probe-20x7200 bisection, §4.8) |
+| 20 | 7,500 | pass | 3 + 1 re-check (ladder run 4, ladder run 5 repeat, polish confirm §4.3; re-check 2 §4.8 — the first re-check failed on latency and is NOT counted) |
+| 20 | 8,000 | pass | 6 (T0, T1, T4, FINAL, verify-s005, stall-capture — §4.5, §4.8; T2/T3 failed on frames, see §4.5) |
+| 20 | 10,000 | fail | — (12 ladder runs, §4.4; systematic macOS kernel loopback limit, NOT a code limit) |
 | 10 | 6,000 | **pending** | 0 — NOT measured, never used by the derivation |
 
 **Formula** (`deriveCapacityLimits`):
@@ -334,8 +338,10 @@ scale-down is a conservative heuristic, not a measurement; the report
 says so. There is no `-max-rooms`: a room limit has nothing to cap in
 a one-room-per-process server.
 
-NOTE (25 Nov ~01:50 NPT): 20 x 8,000 now passes strict (5 runs,
-§4.5), so the highest passing anchor is 8,000 viewers, not 7,500.
+NOTE (25 Nov ~02:55 NPT): 20 x 8,000 now passes strict (6 runs,
+§4.5, §4.8), and the scale re-checks in §4.8 pass at 6,000 / 7,000 /
+7,200 / 7,500, so the highest passing anchor is 8,000 viewers, not
+7,500.
 The detector's coded maxima are STILL 20 / 7,500 (`capacity.go:85`,
 formula above) — the derivation has NOT been re-run with the new
 anchor, and no code has changed. Updating the coded maxima to
@@ -354,7 +360,7 @@ back to the anchor maxima with a loud WARNING; in the `capacity`
 subcommand a detection failure IS an error. The chosen limits are
 logged at startup, e.g.
 `capacity: auto=true maxPublishers=20 maxSubscribers=7500
-scaleFactor=1.00 cpu=Mac17,2 cores=10 ramGiB=24.0`.
+scaleFactor=1.00 cpu=Apple M5 cores=10 ramGiB=24.0`.
 
 **Enforcement:** past the limit, `/publisher` returns 503
 `publisher limit reached: max N publishers` and `/viewer` returns 503
@@ -362,7 +368,7 @@ scaleFactor=1.00 cpu=Mac17,2 cores=10 ramGiB=24.0`.
 lock that guards the maps, at insert time.
 
 **Live output on the real Mac** (verify-004, 24 Nov 23:15 NPT):
-device `Mac17,2 / darwin 25.6.0 / 10 cores / 24.0 GiB RAM`; swap
+device `Apple M5 / macOS / 10 cores / 24.0 GiB RAM`; swap
 used 1,918 MiB, free 1,154 MiB, total 3,072 MiB; file descriptors
 soft 92,160, hard 9,223,372,036,854,775,807 (RLIM_INFINITY), system
 max 184,320; UDP buffers receive 786,896 bytes, send 0 bytes (darwin
@@ -374,13 +380,20 @@ adjustment of the limits.
 
 ### 2.8 Host-health preflight and watchdog (CURRENT rule)
 
-**Current rule (LANDED 24 Nov ~23:50 NPT, `main.go` 550,043 B,
-binary fixed26 `42fbba59…`):** before a scale run starts, the
+**Current rule (LANDED 24 Nov ~23:50 NPT, updated 25 Nov ~03:27 NPT, `main.go` 552,982 B,
+binary fixed27 `0fe2c109…`):** before a scale run starts, the
 server samples the host and loops on a 10-minute recheck while any
 check fails. When macOS holds a swap pool, the memory failure is
 **used swap above `sfuHostMaxUsedSwapMiB` = 512 MiB**; when it holds
 no pool, free memory is the signal instead (8 GiB free memory
-required). Also: free disk 10 GiB, macOS memory-pressure level.
+required). Also: free disk 10 GiB, macOS memory-pressure level. **Zero
+total is never healthy:** the shared swap reader
+(`readSwapMiBChecked`, fixed27) re-reads a zero total once, and
+a twice-zero total returns an error — fail closed / unknown —
+so a genuine no-pool machine now sits at
+host_preflight=UNKNOWN (retrying) until the pool appears or the
+glitch is identified. No-swap protection is unverified in that
+edge case.
 While a run is going, a watchdog re-reads the same numbers with
 cheap system calls (no new processes) and stops the run if the
 machine runs out of room. `-allow-unsafe-host` skips the check; a
@@ -396,10 +409,31 @@ swap would have had to be ~0. The new rule FAILS the old state
 used) is stated in code with the reasoning in a comment, not a
 silent bypass. The rule is proven in production by the T0–T4 +
 FINAL + verify-s005 runs (§4.5), all of which passed preflight with
-used swap 264–272 MiB. A final `main.go` re-sync into this repo
-follows (not yet done at this update). The `docs/capacity.md`
-preflight line still states the old 2,048 MiB bar and is updated
-with that re-sync.
+used swap 264–272 MiB. The `main.go` re-sync into this repo was done 25 Nov ~02:55
+NPT; the fixed27 re-sync lands in this pass (§9). The
+`docs/capacity.md` preflight line is updated to the used-swap
+rule in this pass.
+
+UPDATE 25 Nov ~02:55 NPT (swap redo): a terminal glitch returning
+0 for swap readings was reported, so the "swap never grew" claim
+was re-verified on a fresh 20x7,500 run (§4.8) with four
+cross-checked sources (sysctl `vm.swapusage`, `vm_stat`,
+`memory_pressure`, `top`) — used swap 256.44 MiB constant,
+swapouts 473,693 constant, swapins 364,491 constant,
+memory-pressure free percentage 73–74%, no zero reading in 44
+sysctl reads. The zero glitch did not reproduce in the measurement
+path. The older T0–T4/FINAL delta-0 readings were single-source
+and are not retroactively re-proven; the claim itself is now
+verified by the cross-checked re-run.
+
+UPDATE 25 Nov ~03:27 NPT (zero-total fail-closed fix, fixed27):
+the guard's OK_NO_POOL case is now fail-closed in code — the
+shared reader `readSwapMiBChecked` re-reads a zero total once
+(both reads logged) and a twice-zero total returns an error,
+never OK (unit test `TestReadSwapMiBCheckedZeroTotalFailsClosed`;
+Mac suite 117/117; strict-gate proof is the fixed27 20x5,000
+PASS in §4.8). The glitch mechanism is still unidentified, so
+no-swap protection remains UNVERIFIED in that edge case.
 
 ### 2.9 TURN relay
 
@@ -449,8 +483,8 @@ with that re-sync.
   SFU Bearer token off argv onto an inherited fd. Probe found NO
   token value had ever landed in a log (the fix is preventive, not a
   scrub).
-- Test video: `/private/tmp/hami-cost-interframe-20261119.h264`,
-  161,149 B, sha `ed283d3aab61839a514a0d1add6bb92bce640915b22274d29e158945a11a6969d`,
+- Test video: `hami-cost-interframe-20261119.h264`,
+  161,149 B, sha `ed283d3a…d`,
   302 frames, 10 IDR keyframes (one every 30 frames), 372 packets
   per track. The wrapped `test-60s.mp4` used for the MediaMTX phases
   is 10.00 s, 30 fps, exactly 300 frames (the wrap re-timed the raw
@@ -483,7 +517,7 @@ with that re-sync.
 
 | Run | Where | Result |
 |---|---|---|
-| Standalone repo, first snapshot (pre-detector) | Mac, via hami loop, 24 Nov 22:58 NPT | **100 PASS / 0 FAIL**, `ok github.com/kn33r0s3/hami-media 21.010s` |
+| Standalone repo, first snapshot (pre-detector) | Mac, via the test runner, 24 Nov 22:58 NPT | **100 PASS / 0 FAIL**, `ok github.com/kn33r0s3/hami-media 21.010s` |
 | Standalone repo, first snapshot | Linux VM, Go 1.24.0 | **94 PASS / 6 FAIL**, 122.4 s — all 6 are the known VM UDP block (see below) |
 | Standalone repo, detector re-sync | Mac, 24 Nov 23:25 NPT | **116 PASS / 0 FAIL**, `ok ... 21.040s` (100 + 16 capacity tests) |
 | Standalone repo, detector re-sync | Linux VM | **110 PASS / 6 FAIL**, 122.4 s — same 6 UDP failures, 0 capacity failures |
@@ -590,7 +624,7 @@ All runs: one logical room, H.264 clip (161,149 B, sha `ed283d3a…`),
 MinFrames 302, dissolved <= 0.01), `GOMEMLIMIT=10GiB`, never
 `-allow-unsafe-host`, all 5 launch gates passed before every run
 (SFT/pilot/gateway stopped; binary sha; video sha; free memory
->= 8,192 MiB; no run active). Machine: Niroj's Mac (Apple M5,
+>= 8,192 MiB; no run active). Machine: the reference machine (Apple M5,
 10 cores, 24 GiB RAM) unless stated.
 
 ### 4.1 10 x 5,000 — the repeat protocol
@@ -623,7 +657,7 @@ buffer raise would be a guess — not done.
 Step 3, 23 Nov 17:46:26 NPT, binary fixed9 `de6dc3c9…`, 20 publishers
 x 250 viewers, 4 cells. Aggregate JSON
 `cap20x5000-step3-20261123.json`, sha
-`355300a2c6080962f6c7d575d6260acbfac4db8aa4d0fcacbbaa3ab007aff0ab`,
+`355300a2…`,
 6,640,451 B.
 
 - **measurement_pass = True, strict. 5,000/5,000 on every gate.**
@@ -654,7 +688,7 @@ pending 0. Polish confirm detail: p50 med 2.26 ms (max 5.61),
 delivered 2,265,000 frames, video_frames_sent 6,040,
 rtp_queue_drops 0, rtp_write_errors 0, cleanup_verified true, wall
 131.72 s, JSON sha
-`09ca2cc1b4f658b74a039d633e3578a945e51d33090b49f5e9e4940cf2b84ef3`,
+`09ca2cc1…`,
 10,453,763 B. The polish numbers are BETTER than runs 4–5, but the
 polish changes do not touch the media path — that is machine-state
 variance, not a polish improvement, and is not claimed as one.
@@ -767,7 +801,7 @@ Memory across the 10,000 runs: 7.17–8.98 GiB (sampler); rises with
 viewer count; not a gate, but it becomes the constraint if it
 approaches the 10 GiB GOMEMLIMIT.
 
-### 4.5 20 x 8,000 — PASS strict (T0–T4 + FINAL + verify-s005)
+### 4.5 20 x 8,000 — PASS strict (T0–T4 + FINAL + verify-s005 + stall-capture)
 
 The largest unmeasured configuration the anchors support (20x7,500
 banked 3x; 20x10,000 a systematic kernel-loopback fail). 20x8,000 is
@@ -791,6 +825,8 @@ strict (p95 <= 100 ms, p99 <= 150 ms, MinFrames 302, dissolved
 | gomem4g | 4 GiB / default | **FAIL (catastrophic — confounded, U10)** | 896.72 ms | 1001.46 ms | 129–215, all 8,000 short | 5.744 GiB | 4,661.67 MiB | 0.00 |
 | gomem8g | 8 GiB / default | **FAIL (catastrophic — confounded, U10)** | 882.38 ms | 985.02 ms | 133–207, all 8,000 short | 5.801 GiB | 4,836.53 MiB | 0.00 |
 | verify-t0-repeat | 10 GiB / default | **FAIL (catastrophic — confounded, U10)** | 873.00 ms | 982.93 ms | 137–217, all 8,000 short | 5.762 GiB | 4,713.74 MiB | 0.00 |
+| verify-t0-repeat2 | 10 GiB / default | **FAIL (catastrophic — confounded, U10)** | 871.77 ms | 980.98 ms | 135–217, all 8,000 short | 5.657 GiB | 4,614.45 MiB | 0.00 |
+| stall-capture | 10 GiB / default | **PASS** | 16.39 ms | 28.30 ms | {302: 8000} | 5.716 GiB | 4,801.40 MiB | 0.00 |
 
 FINAL (recomputed from the raw aggregate JSON,
 `cap10x6000-final-20x8000-20261124.json`, 11,137,848 B): p50 median
@@ -800,17 +836,19 @@ dissolved 0, swap used 264.44 MiB constant across every sample,
 swapouts flat at 473,693, peak RSS 5,775,824 KiB = 5.51 GiB
 (18:49:04Z sample). T4 (heap cap 6 GiB + GOGC 50): p99 24.39 ms,
 peak RSS 5.115 GiB, 302/302 frames, swap flat — the best no-swap
-config found so far.
+config found so far. (“No-swap” here means this run measured zero
+swap growth; the guard's no-swap protection is unverified in the
+zero-total edge case — see §2.8.)
 
 **Headline for the best config proven by re-run: FINAL's 25.50 ms /
 5.51 GiB** (T0 env, GOMEMLIMIT 10 GiB, default GC). Run-to-run
 variance is plain: T4 vs FINAL p99 24.39 vs 25.50 ms, peak RSS
 5.115 vs 5.51 GiB; the T0 env re-measured a third time
-(verify-s005) at p99 24.46 ms / 5.668 GiB — a 0.98 GiB RSS spread
-across three T0-env runs. All far under the 150 ms gate. The T0
-env is the best config by frame-cleanliness (2/2 strict passes
-with zero short frames, plus verify-s005); T4 holds the single
-best p99 (24.39 ms) with a one-run caveat.
+(verify-s005) at p99 24.46 ms / 5.668 GiB — a 1.03 GiB RSS spread
+across four T0-env runs (4.690, 5.508, 5.668, 5.716 GiB). All far under the 150 ms gate. The T0
+env is the best config by frame-cleanliness (4/4 strict passes
+with zero short frames: T0, FINAL, verify-s005, stall-capture);
+T4 holds the single best p99 (24.39 ms) with a one-run caveat.
 
 **The T2/T3 frame failures are honest, not hidden.** Aggressive GC
 trades memory for frame completeness: GOGC=default 0 tracks short,
@@ -838,16 +876,21 @@ T0 env (10 GiB/default) that passed T0, FINAL and verify-s005 —
 failed identically (raw JSON `68173d7d…`): 0/8,000 pass, frames
 137–217 (median 180), dissolved 0.4053, NACK sequences 1,122,361,
 delivered 1,436,854 / 2,416,000 (59%), p99 982.93 ms, peak RSS
-5.762 GiB. All three failures ran after 19:29Z; all seven passing
-20x8,000 runs ran before 19:26Z. The failures are a machine-state
+5.762 GiB. A second T0 repeat failed identically too
+(`peakmem-verify-t0-repeat2`, raw JSON `a70f652a…`): 0/8,000 pass,
+frames 135–217 (median 189), dissolved 0.3797, NACK sequences
+1,081,610, delivered 1,498,732 / 2,416,000 (62%), p99 980.98 ms,
+peak RSS 5.657 GiB. All four failures ran after 19:29Z. The six
+passing runs are T0, T1, T4, FINAL, verify-s005 (all before
+19:26Z) and stall-capture (20:47:32Z, §4.8). The failures are a
+machine-state
 change (U10), not a heap-cap effect: the claim that "the 4 GiB cap
 does not save memory — it thrashes" and that "the low-peak
 boundary lies between 4 and 6 GiB" is WITHDRAWN. The failing runs
 burned 450–716% run CPU sustained (a GC death spiral, as a
 symptom, not a proven cause). Swap stayed flat (264.44 MiB)
 through all three collapses. Env-grid results after 19:29Z are
-confounded until the state change is identified; a second T0
-repeat and a kernel-network snapshot are running.
+confounded until the state change is identified; a 20x10,000 netstat run (U5) is still queued, not run.
 
 **Per-role peaks (verify-s005, sampler-005):** cell0 1.43 GiB,
 cell1 1.39 GiB, cell2 1.41 GiB, cell3 1.42 GiB; parent 17.8 MiB.
@@ -855,15 +898,43 @@ The cells hold ~99.7% of the peak, evenly spread; heap is ~86% of
 cell RSS. Per-cell peak RSS is the number the detector's anchor
 should eventually be expressed in, not just the total.
 
+Swap-redo note (25 Nov ~02:55 NPT): the Swap Δ column above was
+recorded by the sampler's single sysctl source. A terminal glitch
+returning 0 for swap readings was reported, so the claim "swap
+never grew" was re-verified on a fresh 20x7,500 run with four
+cross-checked sources (§4.8) — used swap 256.44 MiB constant,
+swapouts 473,693 constant. The old delta-0 numbers stand as
+recorded-by-one-source; the claim is now verified by the
+cross-checked re-run. See §7 limit 16.
+
+Transient-state correction (25 Nov ~02:55 NPT): the paragraph
+above says "all seven passing 20x8,000 runs ran before 19:26Z".
+That framing is superseded — the stall-capture 20x8,000 run
+PASSED at 20:47:32Z in the exact T0 env that failed four times
+(§4.8). The collapse was a transient machine state (~19:29–
+19:50Z), not a scale threshold and not a config effect.
+
+Reconciliation (25 Nov ~03:14 NPT): the count “seven passing
+runs” was wrong, and the table above was missing two trials.
+The twelve 20x8,000 trials are six passes (T0, T1, T4, FINAL,
+verify-s005, stall-capture), two frame failures (T2, T3) and
+four catastrophic failures (gomem4g, gomem8g, verify-t0-repeat,
+verify-t0-repeat2) — each verified from its raw aggregate JSON
+(`measurement_pass` read directly from all twelve files).
+“Seven” counted the seven T0–T4 + FINAL + verify-s005 trials as
+passes; only five of those seven passed (T2/T3 failed on
+frames). The table above now lists all twelve trials, and §2.7
+names the six passes.
+
 ### 4.6 10 x 6,000 — BLOCKED, NO MEASUREMENT
 
 **Do NOT quote any p99 or frame number for 10x6,000 — none exists.**
 
 - Order: verify the new bar (10 publishers x 6,000 viewers, one
   room, p99 <= 150 ms, zero lost frames, same strict gate) as the
-  detector's anchor for Niroj's Mac.
+  detector's anchor for the reference machine.
 - Run launched 24 Nov 22:52:49 NPT, binary fixed25
-  (`ff84b3cd761faa71abc82a1b6a035b0dc80794a456d400b0b08be5a99e1b0a7b`,
+  (`ff84b3cd…`,
   19,287,682 B — the binary that passed 20x7,500 strict a third
   time on 24 Nov 11:27 NPT), clip sha `ed283d3a…`, flags
   `-mode sfu-single -video-file <clip> -duration 60s
@@ -889,7 +960,7 @@ should eventually be expressed in, not just the total.
   preflight passes vacuously on free memory). Freeing swap means
   the swapped pages' owners release them — in practice quitting /
   restarting the heaviest swapped desktop apps (Brave, WebKit /
-  WebContent) or a reboot. That is Niroj's action, not Muse's; no
+  WebContent) or a reboot. That is the maintainer's action, not automated; no
   user application was quit, killed, or touched. The launch is fully
   staged for a re-run (`cap10x6000-launch-001.sh`); re-queue it after
   swap is freed; no rebuild needed. Note the same preflight will park
@@ -902,9 +973,164 @@ should eventually be expressed in, not just the total.
 UPDATE 25 Nov ~01:50 NPT: the preflight rule has changed
 (used-swap cap 512 MiB, §2.8) — the free-swap floor no longer
 blocks this run. The measurement is queued in the resource-reduction
-sweep as peakmem-10x6000 (10 publishers x 600 viewers, 5 cells,
+sweep as peakmem-10x6000 (10 publishers x 6,000 viewers, 5 cells,
 60 s, strict, fixed26); until it lands, this section stays as the
 record of the blocked attempt.
+
+### 4.8 Scale re-checks in the stable state, stall evidence, swap redo (25 Nov ~02:50 NPT)
+
+After the four catastrophic 20x8,000 failures (§4.5, U10), the
+bisection ran 20x5,000 / 20x6,000 / 20x7,000 / 20x7,500. The
+7,500 re-check FAILED on latency (p99 221.33 ms) while 7,000
+passed, which briefly looked like a scale threshold at 7,000–
+7,500. Then the machine state reverted: the stall-capture
+20x8,000 run PASSED, the 20x7,200 bisection PASSED, and a fresh
+20x7,500 re-check PASSED. **The threshold claim is WITHDRAWN.
+The collapse was a transient machine state (~19:29–19:50Z), not
+a scale threshold.** All runs below are T0 env (GOMEMLIMIT 10
+GiB, default GC), fixed26, 60 s, 4 cells, strict, same clip —
+verified from the raw aggregate JSON on the VM (recomputed
+medians match the post numbers exactly). The last row is the
+same T0 env on the fixed27 binary (zero-total fail-closed
+fix); the rest are fixed26.
+
+| Run | Verdict | p50 / p95 / p99 med (ms) | Frames | Peak RSS | Cell HeapInuse sum |
+|---|---|---|---|---|---|
+| 20x5,000 probe | **PASS** | 1.84 / 5.32 / 16.20 | {302: 5000} | 3.607 GiB | 2,941.03 MiB |
+| 20x6,000 probe | **PASS** | 1.66 / 5.01 / 13.90 | {302: 6000} | 4.365 GiB | 3,641.84 MiB |
+| 20x7,000 probe | **PASS** | 2.59 / 7.06 / 21.08 | {302: 7000} | 5.494 GiB | 4,275.35 MiB |
+| 20x7,200 bisection | **PASS** | 2.33 / 8.33 / 19.43 | {302: 7200} | 5.088 GiB | 4,428.16 MiB |
+| 20x7,500 re-check 2 | **PASS** | 2.11 / 10.30 / 19.51 | {302: 7500} | 5.721 GiB | 4,785.63 MiB |
+| 20x8,000 stall-capture | **PASS** | 3.29 / 16.39 / 28.30 | {302: 8000} | 5.716 GiB | 4,801.40 MiB |
+| 20x5,000 mid-media | **PASS** | 1.73 / 5.02 / 12.53 | {302: 5000} | 3.735 GiB | 3,096.02 MiB |
+| 20x5,000 fixed27 | **PASS** | 1.64 / 7.39 / 13.24 | {302: 5000} | 3.850 GiB | 2,963.65 MiB |
+
+The earlier 20x7,500 re-check (20:11:56Z, JSON `c1e78c9b…`)
+failed on latency alone — p50 median 16.81 ms (5x the passing
+p50), p95 176.45 ms, p99 221.33 ms, only 98 viewers short by one
+frame — at normal CPU (~107–127% media) with 0 new kernel
+full-buffer drops and FD exhaustion excluded (1,889 FDs/cell vs
+a 92,160 limit). It is a single data point inside the unstable
+window, superseded by the re-check 2 pass (JSON `f8f2f25e…`,
+p99 median 19.51 ms, max 29.94 ms, 7,500/7,500 pass, 0 NACKs,
+0 dissolved, wall 132.42 s, per-cell peaks 1.49 / 1.34 / 1.35 /
+1.41 GiB, parent 24,272 KiB).
+
+**Stall evidence.** The publishers send the whole 302-frame
+clip in the first ~61 s of a cell's life, then the cell sits idle
+~66 s — an earlier "media" filter that counted the idle tail as
+media was wrong and is corrected (stall-002). In the corrected
+send window (elapsedMs < 62000, 17 runs x 4 cells): goroutines
+scale linearly, ~30/viewer/cell (60,224 max at 8,000);
+scheduler run-queue latency overlaps passing and failing runs
+at 8,000 — no schedMax threshold separates them; GC pauses are
+tiny everywhere (max 0.66–10.49 ms); tickLateOver1s = 0 in ALL
+68 cells. The stall is NOT late ticks and NOT GC. The 301-frame
+shortfalls in T2/T3 are publisher-side (cell-0 sent 1,509 /
+1,510 and 1,507 / 1,510 frames — the frames were never sent).
+
+**Stall gate — PROPOSED, not set.** Fail the run if p50 median
+> 10 ms. Passing medians are 1.66–3.70 ms (highest single-viewer
+p50 7.90 ms); the failing 7,500 median was 16.81 ms and the
+catastrophic runs ~870–900 ms. The threshold sits in a clean gap
+(2.7x above the highest passing median, 1.7x below the lowest
+failing one). The tickLateOver1s and schedMax forms are dead —
+they never fire / do not separate. A negative control is designed
+(GOMAXPROCS=1 at 20x8,000, env-only) and runs after the gate is
+set; if the gate passes a deliberate stall, the gate is broken.
+
+**Profile timing (measured).** Mid-media run: publisher start
+20:38:46.64Z, CPU profile 20:39:34–20:39:44Z (delay 50 s) fully
+inside the send window. Stall run: publisher start 20:45:04.59Z,
+profile 20:46:01–20:46:11Z (delay 60 s) straddles the window end
+(3.6 s in, 6.5 s post-send). T2: profile 18:31:49–18:31:59Z
+(delay 90 s) is 25.3 s post-send. Rule: delay 50 s lands
+in-window, 60 s straddles, 90 s is post-media. The code comment
+claiming 90 s is "mid-media" is disproved by measurement. All
+three profiles are wait-dominated (kevent + rawsyscall +
+cond_wait ≈ 77–89% flat) with no function-level differential
+between passing and failing windows. A goroutine profile WITH
+symbols exists from the 20x10,000 ladder runs (r12 cell-0:
+75,184 goroutines, all flat in `runtime.gopark`); the same-binary
+proof still needs the goroutine-profile env trigger landed and a
+fresh run.
+
+**Goroutine stacks are NOT the RSS gap.** Gctrace in the
+mid-media run shows 32 MB stacks/cell at 20x5,000 — far below
+the ~150–270 MB/cell estimate. What the RSS-minus-HeapInuse gap
+is remains open (HeapSys reservation and other non-heap RSS are
+candidates).
+
+**Attribution fold-in.** ~50–70% of live heap in the test process
+is Pion per-connection state (SRTP 19–23%, ICE 9–12%, DTLS
+9–11%, packetio 4–8%, loggers 4–5%, WebRTC misc 4–6%); Go
+runtime 7–9%; Hami's own code 2–3%. Never 85% — that was a
+misread of a top-60-node coverage figure. Server-side live heap
+per viewer at ramp is ~55–65 KB (the harness doubles it with
+client PCs + recorders). **Failure first:** failing runs have
+the SAME memory split as passing ones, so heap work is only
+worth doing if it lowers the cost of the thing that fails.
+Order: (1) capture the stall mid-media, (2) add a stall gate,
+(3) only then cut costs against the failing metric. Layer 2/3
+A/B work (no-op logger factory, interceptor trim, DTLS-cert
+sharing, STUN keepalive, egress shards) is queued behind the
+stall work. Working latency assumption: the 10,000-person
+audience tolerates a few seconds (segmented HTTP for the
+audience, WebRTC only for interactors). Arithmetic (calculations,
+not measurements): 10,000 x 1 Mbps = 10 Gbps egress; ~104
+packets/s/viewer ≈ 1M encrypt-and-send ops/s; ~0.6 GB at 10,000
+viewers — bandwidth and per-packet CPU are the real ceilings,
+and the scale runs (5 fps over loopback) have not tested them.
+
+**Swap redo (25 Nov ~02:55 NPT).** Cross-check script
+(`swap-redo-crosscheck-001`, 5 rounds x 4 sources, run
+21:06:43–21:07:24Z overlapping the re-check 2 run's setup +
+early media): sysctl `vm.swapusage` 15/15 reads total 1,024 /
+used 256.44 / free 767.56 MiB; `vm_stat`, `memory_pressure` and
+`top` agree exactly on Swapouts 473,693 and Swapins 364,491 in
+every round; pageouts rose +311 over 41 s (background host
+paging); `/private/var/vm/` holds only `sleepimage`, no swap
+files. The re-check 2 run's sampler-007 (29 samples, with
+`memory_pressure` + full `vm_stat` + a zero-glitch re-read):
+used swap 256.44 MiB constant, swapouts/swapins constant,
+memory-pressure free percentage 73–74%, ZERO_GLITCH never
+fired; netstat 0 new full-buffer drops (7,997 -> 7,997), mbufs
+healthy. The zero glitch did NOT reproduce in the measurement
+path (44 sysctl reads, all non-zero). Two honest possibilities
+remain: the glitch lives in the interactive terminal session
+only, or it is intermittent and did not fire in these windows.
+The "swap never grew" claim is now verified on a fresh run by
+four cross-checked sources; the older single-source delta-0
+readings are not retroactively re-proven. The flat swapouts are
+explained by macOS compressor-first behaviour (pageouts rise
+slowly, swapouts only grow when the compressor spills), not by
+a stuck counter — three independent readers agree on the
+counters. `parent_swapped_kib=0` / `time_l_swaps=0` are
+consistent with the system state (13,495 MiB free at run end,
+swapouts flat system-wide): the kernel had no reason to swap
+the process out.
+
+**Zero-total fail-closed fix (fixed27, 25 Nov ~03:27 NPT).**
+The shared swap reader is now `readSwapMiBChecked` (one place,
+used by the preflight, the watchdog, the audio-rung guard and
+progress reads, and the detector): a zero swap total is re-read
+once (both reads logged); a twice-zero total returns an error —
+fail closed / unknown, never OK. Verified in the VM first
+(darwin + linux vet 3x each, targeted tests 20x, darwin build
+3x with identical shas, live-snapshot wiring check 5x, full
+suite twice with the same 5 pre-existing VM-UDP failures as
+pristine fixed26) and on the Mac (vet 0, targeted tests pass,
+full suite 117/117, binary `0fe2c109…`, 19,305,074 B). The
+strict-gate proof is the row above: 20x5,000 PASS on fixed27
+(p99 13.24 ms, 302/302, swap flat, 0 new kernel full-buffer
+drops; JSON `a9f17a69…`, VM-recomputed). Honest limit: this
+run's live pool read non-zero on the first read, so the re-read
+path did not trigger in the run — the twice-zero path is proven
+by the unit test (stubbed zero twice → error; zero-then-live →
+recovers), not by a live zero. No-swap protection remains
+UNVERIFIED in the zero-total edge case until the glitch
+mechanism is identified — the fix changes the failure mode
+(refuse / unknown) rather than proving the protection.
 
 ### 4.7 Smaller runs (for completeness)
 
@@ -934,7 +1160,7 @@ and cannot just go live; becoming a publisher means switching paths
 (HLS -> WebRTC join). MediaMTX v1.21.4, ffmpeg 7.1.1. All on the Mac.
 
 **Correction that frames this whole section:** Hami is for VIDEO
-streaming, not audio (Niroj, 24 Nov ~17:09). The first version of
+streaming, not audio (project decision, 24 Nov ~17:09). The first version of
 this plan was audio-sized and is abandoned; Phase 0 was redone with
 video.
 
@@ -1082,7 +1308,7 @@ as test services only.
 
 ## 6. The sibling service hami-sfu (Stages 1–6) — shares these mechanisms
 
-hami-sfu (`[local path redacted]`)
+hami-sfu (`services/hami-sfu`)
 is the product codebase; hami-media is the capacity lab. The stages
 below verified the mechanisms hami-media also uses (auth, NACK,
 TURN), ported from hami-media. They are included here because the
@@ -1144,11 +1370,11 @@ Fail-before / pass-after, identical command: pre-fix variant
 **283/300 (94.3%) and 270/300 (90.0%), exit 1**; fixed
 (`loss_test.go`, 29,212 B, sha256 `9a74061d…07076a`) — **300/300
 both, exit 0**. Logs: fail-before
-`~/hami/logs/stage3-failbefore-rerun-003.log` (VM copy sha256
+`logs/stage3-failbefore-rerun-003.log` (VM copy sha256
 `eaa73906…1809ae3`), pass-after
-`~/hami/logs/stage3-failbefore-rerun-003-restore.log` (VM copy
+`logs/stage3-failbefore-rerun-003-restore.log` (VM copy
 `c9e1a94d…352d49b`). Two earlier fail-before citations are VOID
-(both were overwritten pass runs — the hami loop retries a queue
+(both were overwritten pass runs — the test runner retries a queue
 script that exits non-zero; see the stage note section 3 for the
 full correction). Full re-check green: **34/34 unit tests**,
 smokes 2/2 (23 + 10 frames). Linux leg: `go vet` clean, **34/34
@@ -1160,7 +1386,7 @@ per dropped packet and never retries it (42 RTX in run 6; stuck
 packets NACKed 257–289 times each). The mechanism is inside Pion's
 responder (`pion/interceptor` v0.1.51), not hami-sfu code. The
 subscriber-hop 10% WITHOUT receiver reports variant scored 296/300
-in run 5 — ruled OUT OF SCOPE (Niroj's rule names only the
+in run 5 — ruled OUT OF SCOPE (the project rule names only the
 publisher hop; diagnostic probe; one-frame gap is noise).
 
 **Subscriber-hop answer (decisive experiment, 24 Nov ~21:21–21:39
@@ -1177,7 +1403,7 @@ process lifetime) — repeats need separate `go test` processes.
 
 Test-only stage: NO server file changed (only new file
 `reconnect_test.go`, 25,095 B, 660 lines, sha256
-`8d1c060faf015b2ab053c27684f9c1a8f7875ebc6ef4d006459e5a4f86f47826`).
+`8d1c060f…`).
 
 | Test | Result |
 |---|---|
@@ -1201,7 +1427,7 @@ on track end.
 
 ### 6.5 Stage 5 — TURN: wiring COMPLETE, relay PROVEN under a kernel-enforced block; literal real-NAT gate NOT closed
 
-**Read the verdict before quoting a PASS.** Niroj's rule: "a client
+**Read the verdict before quoting a PASS.** The project rule: "a client
 behind a real NAT with UDP blocked/restricted connects via the relay
 and receives frames. Loopback does NOT count." What was proven:
 the wiring is in (`hami-sfu turn-server` runs the standalone relay;
@@ -1233,14 +1459,14 @@ neither PC connected, server lists no track**. Fail-before
 10 s, no relay candidate, no connection** (25.63 s). Linux leg:
 `go vet` clean, **36/36 PASS** (unit tests only; VM Pion ICE is
 broken — separate diagnosis). Not run: pf (needs a sudoers line only
-Niroj can add; moot for the one-machine case), Docker (no CLI on
+the maintainer can add; moot for the one-machine case), Docker (no CLI on
 the loop's PATH). Files: `turn.go` NEW 12,204 B / 334 lines,
 `main.go` 24,441 B / 891 lines, `turn_test.go` NEW 10,332 B,
 `turn_relay_test.go` NEW 7,966 B, `turn_config_test.go` NEW 2,756 B.
 
 ### 6.6 Stage 6 — webpage (streamer + viewer, one page): DONE, verified on the Mac; no live browser check yet
 
-Requirement (Niroj, 24 Nov ~21:33): "on the webpage i must see
+Requirement (project decision, 24 Nov ~21:33): "on the webpage i must see
 viewer's side and streamer's side, all in one". One file changed:
 `index.html` 4,158 B / 121 lines -> 10,791 B / 304 lines (run 002,
 below) -> **11,685 B / 324 lines** (viewer fix, sha
@@ -1272,7 +1498,7 @@ old frame) was deployed 24 Nov ~22:20 NPT and verified served
 `8069468b…`, infinite re-subscribe + 5 s watchdog present, no 5-try
 cap). Markers/smokes NOT yet re-run on the fix version. NOT done:
 a live browser end-to-end check (real publish + watch in a browser
-on Niroj's Mac) — the last step.
+on the reference machine) — the last step.
 
 ---
 
@@ -1296,7 +1522,7 @@ on Niroj's Mac) — the last step.
    used-swap cap of 512 MiB (§2.8, landed). The 10x6,000 run was
    blocked by free swap 1,154.375 MiB vs the old 2,048 MiB floor
    (shortfall 893.625 MiB). Swap is owned by long-lived desktop
-   apps (Brave, WebKit); freeing it is Niroj's action
+   apps (Brave, WebKit); freeing it is the maintainer's action
    (quit/restart apps, or reboot) — but no longer required to run,
    since the rule judges used swap, not free.
 4. **The VM sandbox UDP block.** The VM blocks every unconnected UDP
@@ -1337,55 +1563,114 @@ on Niroj's Mac) — the last step.
     stretch gate with its own numbers, unmeasured. Nothing about 20
     is assumed to carry over to 50.
 13. **Run-to-run peak-RSS variance is ~1 GiB at 20x8,000.** The
-    same T0 env measured 4.690, 5.508 and 5.668 GiB across three
-    runs. Peak-memory comparisons need repeats; a single run's RSS
+    same T0 env measured 4.690, 5.508, 5.668 and 5.716 GiB across
+    four runs (T0, FINAL, verify-s005, stall-capture).
+    Peak-memory comparisons need repeats; a single run's RSS
     cannot separate configs closer than ~1 GiB.
-14. **Three consecutive systemic failures after 19:29Z
-    (gomem4g, gomem8g, T0-repeat) are a machine-state change, NOT
-    a heap-cap effect (U10).** All three failed identically
-    (0/8,000 pass, dissolved 0.41–0.45, p99 ~1000 ms) including a
-    repeat in the exact T0 env that had passed three times. The
-    earlier claim that the 4 GiB cap thrashes is WITHDRAWN; the
-    low-peak boundary is UNKNOWN until clean runs exist. Env-grid
-    results after 19:29Z are confounded.
+14. **Systemic failures after 19:29Z (gomem4g, gomem8g,
+    T0-repeat, T0-repeat2) are a transient machine-state change,
+    NOT a heap-cap effect and NOT a scale threshold (U10).** All
+    four failed identically (0/8,000 pass, dissolved 0.38–0.45,
+    p99 ~1000 ms) including repeats in the exact T0 env that had
+    passed before — and the same env passed again at 20:47Z
+    (stall-capture) and 7,500 passed again in the re-check 2
+    (§4.8). The earlier claim that the 4 GiB cap thrashes is
+    WITHDRAWN; the low-peak boundary is UNKNOWN until clean runs
+    exist. Env-grid results after 19:29Z are confounded.
 15. **GPU: the SFU path uses none (measured).** No GPU framework is
     linked (otool: only libSystem, libresolv, CoreFoundation,
     Security), no GPU API references exist (nm), the binary is pure
     Go + Pion. The Mac has an Apple M5 GPU (Metal 4); the software
     never touches it. There are no GPU savings to claim.
+16. **Swap "never grew" — re-verified, not assumed (§4.8).** A
+    terminal glitch returning 0 for swap readings was reported, so
+    every zero-based swap conclusion was re-checked with four
+    cross-checked sources on a fresh 20x7,500 run: used swap
+    256.44 MiB constant, swapouts 473,693 constant, swapins
+    364,491 constant, memory-pressure free percentage 73–74%, no
+    zero in 44 sysctl reads. The older T0–T4/FINAL delta-0
+    readings were single-source and are not retroactively
+    re-proven. The guard's OK_NO_POOL case (a 0 total treated as
+    healthy) is now fail-closed in code (fixed27,
+    `readSwapMiBChecked`: a zero total is re-read once, and a
+    twice-zero total returns an error, never OK — see §2.8;
+    unit-tested, Mac suite 117/117). But the glitch mechanism is
+    still unidentified, so no-swap protection remains UNVERIFIED
+    in that edge case: a genuine no-pool machine would now sit at
+    host_preflight=UNKNOWN (retrying) until the pool appears or
+    the case is closed with evidence.
+17. **Stall gate is PROPOSED, not set (§4.8).** Fail the run if
+    p50 median > 10 ms. The tickLateOver1s and schedMax forms are
+    dead. A deliberate-stall negative control is designed, not
+    run; the gate is unproven until it fails one.
+18. **The 7,000–7,500 scale threshold claim is WITHDRAWN (§4.8).**
+    It rested on a single 7,500 failure inside the unstable
+    window; the re-check 2 passes at p99 19.51 ms.
+19. **Goroutine stacks are NOT the RSS gap (§4.8).** Measured 32
+    MB/cell at 20x5,000 via gctrace, not the estimated 150–270
+    MB/cell. What the gap is remains open.
 
 ---
 
 ## 8. Open work and in-progress investigations
 
+**Publication-safety scrub (25 Nov ~02:55 NPT):** this update
+replaces home-directory paths with `~`-relative forms throughout
+REPORT.md, README.md and docs/ (see the review checklist in the
+result note). No token, key, credential, email, non-loopback IP,
+tunnel URL, device ID, agent/worker ID or cron reference is
+published. Loopback addresses in run commands are kept — they are
+test addresses, not identifying. Unproven claims are labelled
+unproven, never stated as fact.
+
 - **Preflight rule change: LANDED** (used-swap cap 512 MiB, §2.8,
-  fixed26). Remaining: final `main.go` re-sync into this repo +
-  `docs/capacity.md` preflight line update.
-- **Swap / heat / limit investigations (measurement agent, IN
-  PROGRESS — partial outcomes):** swap — best no-swap config proven
-  (T4: 6 GiB + GOGC 50, 5.115 GiB, swap flat); three systemic
-  failures after 19:29Z (machine-state change, U10 — env-grid
-  results in that window confounded); heat — media phase ~1.1
-  cores, setup 2.5–3.9 cores, no throttling, temperature/power
-  still a gap (powermetrics needs root); limit — 20x8,000 found
-  and verified strict (§4.5). The combined resource sweep
-  continues (env grid, scale runs, unknown hunt U1–U10).
+  fixed26; `main.go` re-sync into this repo DONE 25 Nov ~02:55
+  NPT). NEW in this pass: the zero-total fail-closed fix
+  (fixed27, §2.8) — source re-sync into this repo DONE in this
+  pass (see §9).
+  The `docs/capacity.md` preflight line is updated to the
+  used-swap rule in this pass.
+- **Swap / heat / limit investigations (DONE for swap, IN
+  PROGRESS for the rest):** swap — "swap never grew" re-verified
+  on a fresh 20x7,500 run with four cross-checked sources (§4.8);
+  best no-swap config still T4 (6 GiB + GOGC 50, 5.115 GiB).
+  Four systemic failures after 19:29Z were a transient
+  machine-state change, NOT a scale threshold — 7,500 and 8,000
+  both pass again in the stable state (§4.8). Heat — media phase
+  ~1.1 cores, setup 2.5–3.9 cores, no throttling,
+  temperature/power still a gap (powermetrics needs root). Stall
+  work — capture landed (mid-media CPU profile in-window),
+  stall gate PROPOSED (p50 median > 10 ms), negative control
+  designed, not run. The combined resource sweep continues (env
+  grid, unknown hunt U1–U11).
 - **10 x 6,000 measurement:** UNBLOCKED by the preflight rule
   change (section 4.6). Queued in the resource-reduction sweep as
-  peakmem-10x6000 (10 publishers x 600 viewers, 5 cells, 60 s,
+  peakmem-10x6000 (10 publishers x 6,000 viewers, 5 cells, 60 s,
   strict, fixed26). Until it lands, the detector keeps it as
   PENDING and never uses it.
 - **Resource-reduction sweep (in progress):** env grid
   {4,6,8,10} GiB x {default,50,20} at 20x8,000 + scale runs
-  (20x5,000, 20x7,500, 10x6,000) + unknown hunt (U1 301-frame
-  shortfall, U3 per-pid CPU-profile patch prepared-not-landed, U9
-  darwin-vet paradox). Best combined config decided only from
-  strict-passing runs.
-- **API contract + SDK plan (next track, docs only):** document the
-  signaling + REST contract from the actual endpoints in the code
-  (hami-media serve path, hami-sfu `/api/publish`, `/api/subscribe`,
-  `/api/rooms`), then SDKs for JS/TS, Kotlin/Java, Swift, Dart,
-  React Native. No SDK building yet.
+  (20x5,000 DONE, 20x6,000 DONE, 20x7,000 DONE, 20x7,200 DONE,
+  20x7,500 re-check 2 DONE — all PASS; 10x6,000 still unrun) +
+  unknown hunt (U1 301-frame shortfall — publisher-side, U3
+  per-pid CPU-profile patch prepared-not-landed, U9 darwin-vet
+  paradox SOLVED, U10 transient-state reframe, U11 swap redo
+  DONE). Best combined config decided only from strict-passing
+  runs.
+- **Stall gate (proposed, not set):** p50 median > 10 ms (§4.8).
+  Set by the parent, then negative control A (GOMAXPROCS=1 at
+  20x8,000) must FAIL it. Layer 2/3 A/B work stays queued behind
+  the stall gate.
+- **API contract + SDK plan (next track, docs only):** the
+  contract is documented in `docs/integration.md` from the actual
+  endpoints in the code — hami-media serve path (`/health`,
+  `/publisher`, `/publisher/ready`, `/viewer`, `/stats`,
+  `/receive-stats`, `/heap-profile`, `/goroutine-profile`,
+  `/cpu-profile`, `/cleanup`, `/shutdown`, `/metrics`) and
+  hami-sfu (`POST /api/publish/{room}`, `POST
+  /api/subscribe/{room}`, `GET /api/rooms/{room}`), all
+  Bearer-token + per-client-token gated. SDKs for JS/TS,
+  Kotlin/Java, Swift, Dart, React Native are planned, not built.
 - **Library split:** `package main` -> importable package + thin
   `cmd/` entrypoint, without breaking the 116 tests. Planned
   follow-up, after the preflight re-sync, against the finished
@@ -1393,13 +1678,12 @@ on Niroj's Mac) — the last step.
 - **TURN real-NAT gate:** needs a second machine/network.
 - **Second-machine capacity proof (20x5,000 x3 + LiveKit OSS
   comparison, same session, same 150 ms p99 gate):** blocked — no
-  second machine exists; only Niroj's Mac is paired.
-- **Live browser end-to-end check of the Stage 6 page** on Niroj's
-  Mac (publish left panel, watch right panel, stop publisher,
+  second machine exists; only the reference machine is paired.
+- **Live browser end-to-end check of the Stage 6 page** on the reference machine (publish left panel, watch right panel, stop publisher,
   confirm the viewer re-subscribes on its own).
 - **Subscriber-hop 100% at 10% loss:** needs a retransmit-retry
   around Pion's responder (see limit 5).
-- **Commit + push + GitHub repo creation:** Niroj's terminal action.
+- **Commit + push + GitHub repo creation:** the maintainer's terminal action.
   Nothing here is committed.
 - **G6 promotion (hybrid):** blocked on per-user auth, end to end.
 
@@ -1409,16 +1693,19 @@ on Niroj's Mac) — the last step.
 
 ### Repo (Mac)
 
-- `[local path redacted]` — standalone repo
+- `hami-media/` — standalone repo
   (README.md, LICENSE, go.mod, go.sum, main.go, capacity.go,
   capacity_test.go, auth.go, turn.go, latency.go, platform_*.go,
-  *_test.go, docs/). Re-synced 24 Nov ~23:26 NPT (detector landed).
-- `[local path redacted]` —
+  *_test.go, docs/). Re-synced 24 Nov ~23:26 NPT (detector
+  landed), 25 Nov ~02:55 NPT (preflight rule, tests 116/116),
+  25 Nov ~03:27 NPT (zero-total fail-closed fix, fixed27,
+  tests 117/117).
+- `services/hami-media/` —
   source tree the repo was copied from (uncommitted).
-- `[local path redacted]` —
+- `services/hami-sfu/` —
   sibling product service, Stages 1–6 (uncommitted).
 
-### Result notes (VM, `~/workspace/hami-media-work/`)
+### Result notes (working notes)
 
 - `stage1-baseline-result-001.md`, `stage2-serve-auth-result-001.md`,
   `stage3-lost-frames-result-001.md`,
@@ -1436,14 +1723,31 @@ on Niroj's Mac) — the last step.
   runs 1–12, full detail), `polish-001.md` (P1–P3 hardening +
   20x7,500 third pass, 24 Nov 11:27 NPT)
 - `peakmem-001.md` (peak-memory sweep), `resource-sweep-001.md`
-  (combined resource sweep), `unknown-hunt-001.md` (U1–U9),
-  `hami-media-mandate-2026-11-25.md` (Niroj's mandate, 25 Nov
-  ~01:10 NPT)
+  (combined resource sweep), `unknown-hunt-001.md` (U1–U11),
+  `hami-media-mandate-2026-11-25.md` (the project mandate, 25 Nov
+  ~01:10 NPT), `resource-attribution-001.md` (per-component
+  attribution — headline corrected to ~50–70% Pion
+  per-connection state, never 85%; §5 + §7.8 corrected by the
+  swap redo), `attribution-deep-001.md` (own attribution +
+  candidates C1–C10), `stall-evidence-001.md` (stall-proof side
+  package — profile timing, failing-vs-passing, gate proposal,
+  goroutine profile with symbols), `swap-zero-001.md`
+  (zero-total fail-closed fix: shared-reader code change,
+  VM-first exhaustive verification, fixed27 strict-gate run,
+  20x8,000 trial reconciliation), `swap-redo-001.md` (swap redo
+  — cross-check + 7,500 re-verification)
 - `mediamtx-phase0-result-001.md`, `mediamtx-phase1-result-001.md`,
   `mediamtx-phase2-result-001.md`, `mediamtx-phase3-result-001.md`,
   `mediamtx-srs-test-plan-001.md`
 
-### Logs (Mac `~/hami/logs/`, VM copies in `~/workspace/hami-media-work/`)
+### Logs (run evidence)
+
+The filenames below are historical citations, not files included in this
+checkout. Some raw logs were recovered and verified externally; unrecovered
+names and templates are listed in
+[`docs/archive/log-evidence-status.md`](docs/archive/log-evidence-status.md).
+Claims tied only to unavailable raw logs have not been independently
+re-verified in this checkout.
 
 - Stage 3: `stage3-final-fixed.log`, `stage3-failbefore-rerun-003.log`
   (sha256 `eaa73906…1809ae3`), `stage3-failbefore-rerun-003-restore.log`
@@ -1451,7 +1755,7 @@ on Niroj's Mac) — the last step.
   (`78f3446a…fbd91f2`), `stage3-subhop-002-20261124-213706.log`
   (`7a93e6cf…0920d6`)
 - Stage 4: `stage4-reconnect-001.log` (VM copy 12,514 B, sha256
-  `ca1537fab3ac29c11702594f3a9a11c445d7e39a5e85221ba195facdfcdafb90`)
+  `ca1537fa…`)
 - Stage 5: `stage5-turn-gate-002.log` (`26452189…51831a`),
   `stage5-turn-sandbox-002.log` (`39d8c0c5…eb054be`),
   `stage5-turn-failbefore-001.log` (`3f4b66c0…31b1ac`),
@@ -1461,9 +1765,9 @@ on Niroj's Mac) — the last step.
 - Detector: `capacity-detector-verify-004-20261124-231517.log`
   (VM copy sha256 `22be38a4…100de8a7`)
 - 10x6,000: `cap10x6000-20261124.json` (0 B, sha256
-  `e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855`),
+  `e3b0c442…`),
   `cap10x6000-20261124.stderr` (1,106 B, sha256
-  `eff6974d3b561ce3ddc25ed369aed156bf7f1b71dc4fbd3e6a41fe6eebcbdb43`),
+  `eff6974d…`),
   `cap10x6000-launch-001.log` (`de4b1e78…`), `cap10x6000-run-001.log`
   (`5d4c0276…`), `cap10x6000-probe-002.log` (`92d2622b…`),
   `cap10x6000-kill-001.log` (`a9438776…`)
@@ -1484,31 +1788,42 @@ on Niroj's Mac) — the last step.
   (26,350 B), `standalone-resync-verify-001-20261124-232559.txt`
   (sha256 `1bcddce1…`), `standalone-resync-vm-test.log` (sha256
   `b4d867f8…`)
-- Capacity runs: `~/hami/logs/cap20x5000-step3-20261123.json`
+- Capacity runs: `logs/cap20x5000-step3-20261123.json`
   (sha `355300a2…`, 6,640,451 B),
   `cap20x5000-polish001-20x7500-20261123.json` (sha `09ca2cc1…`,
   10,453,763 B), `cap20x5000-lad20x7500r4/r5-20261123.json`,
   `cap20x5000-lad20x10000r{1..12}-20261123.json`, and the per-run
   `*-run-001.log` files.
-- MediaMTX: `~/hami/logs/mediamtx-phase0-00{1..7}.log`,
+- MediaMTX: `logs/mediamtx-phase0-00{1..7}.log`,
   `mediamtx-phase1-001.log`, `mediamtx-phase2-00{1..4}.log`,
   `mediamtx-phase3-setup-00{1..3}.log`, `mediamtx-phase3-diag-001.log`,
   `mediamtx-phase3-load-001.log`, `mediamtx-phase3b-load-002/003.log`
 - Heat investigation (in progress, no conclusion):
-  `~/workspace/hami-media-work/heat-invest-probe-001-20261124-234125.log`
+  `heat-invest-probe-001-20261124-234125.log`
+- Scale re-checks + stall + swap redo (25 Nov ~02:50 NPT):
+  `peakmem-recheck2-20x7500-20261124.json`
+  (sha `f8f2f25e…`, 10,446,738 B — 20x7,500 re-check 2 PASS),
+  `peakmem-recheck2-20x7500-swap.log`
+  (sha `526a62e9…` — sampler-007, 29 samples, ZERO_GLITCH never
+  fired), `swap-redo-crosscheck-001.log`
+  (sha `39d4f1b3…` — 5 rounds x 4 sources, all agree),
+  `resource-stall-20261125-205315.log`
+  (sha `f6972a9b…` — corrected send-window table, 17 runs x 4
+  cells), `stall-evidence-001.log`
+  (profile start/end vs publisher start)
 
 ### Key file hashes (hami-sfu stages)
 
 - Stage 3: `loss_test.go` 29,212 B sha256
-  `9a74061dd620c122e4a99b76f14b726db2345ec77bf2875c621bc2a71907076a`;
-  pre-fix variant 28,400 B `c380162adb8797bb3cdbf4f220ddb8ca68fbe2e973b8ac689ea31845f503cd1b`
+  `9a74061d…`;
+  pre-fix variant 28,400 B `c380162a…`
 - Stage 4: `reconnect_test.go` 25,095 B sha256
-  `8d1c060faf015b2ab053c27684f9c1a8f7875ebc6ef4d006459e5a4f86f47826`
-- Stage 5: `turn.go` `6dbad70ce65b24f6466ae1d45597c1748fe78fcd7664af7fd2cefc64de8749b2`,
-  `main.go` `6a0f0487bb67a326a0d8f2d8352fe4a38eee836ff6e03f85c20da51500240cc7`
+  `8d1c060f…`
+- Stage 5: `turn.go` `6dbad70c…`,
+  `main.go` `6a0f0487…`
 - Stage 6: `index.html` 11,685 B (viewer fix, sha `8069468b…`,
   deployed 24 Nov ~22:20 NPT); pre-fix page 10,791 B sha256
-  `2ab1b49b8631d957c9db0548c2eb779b4bf04f20b20da918bc3bb1eeca6d2d09`
+  `2ab1b49b…`
 
 ---
 
@@ -1534,7 +1849,8 @@ go test -count=1 -v -run 'TestDeriveCapacityLimits|TestCapacityAnchors|TestResol
   -sfu-publishers 20 -sfu-viewers-per-publisher 250 -sfu-cells 4 \
   -metrics-listen 127.0.0.1:9464
 # 20x7,500: -sfu-viewers-per-publisher 375. 20x10,000: 500.
-# 10x6,000 (BLOCKED until swap is freed / Mac reboots):
+# 10x6,000 (queued as peakmem-10x6000; preflight rule changed,
+#   no longer blocked on free swap):
 #   -sfu-publishers 10 -sfu-viewers-per-publisher 600 -sfu-cells 5
 
 # TURN relay
@@ -1562,12 +1878,11 @@ go test -tags smoke -run 'TestReconnect' -v -count=1 -timeout 300s .
 ```
 
 **Loop-script discipline (learned in Stage 3, applies to every Mac
-run via the hami loop):** a loop script whose EXPECTED outcome is a
+run via the test runner):** a loop script whose EXPECTED outcome is a
 test failure must exit 0 always (verdict lives in the log) and use
 unique timestamped log/tee names — the loop retries a queue script
 that exits non-zero, and a retry overwrites the fail evidence with a
-pass. Never hash or list inside a loop script (TCC-blocked on
-`~/Downloads`); verify by `files.write` receipt + VM hashes. Never
+pass. Never hash or list inside a loop script (OS-blocked on the checkout directory); verify by `files.write` receipt + VM hashes. Never
 `go test -count=3` on fixed-port tests.
 
 ---
@@ -1575,6 +1890,10 @@ pass. Never hash or list inside a loop script (TCC-blocked on
 *End of report. Written 24 Nov 2026 ~23:50 NPT; updated 25 Nov
 2026 ~01:50 NPT (§2.7–2.8, §3.6, §4.5 new, §4.6–4.7 renumbered,
 §6.6, §7–9); corrected 25 Nov 2026 ~02:05 NPT (§4.5, §7–8: U10 —
-gomem4g attribution withdrawn). Not committed, not pushed. The
-next update follows the 10x6,000 measurement and the
-resource-reduction sweep results.*
+gomem4g attribution withdrawn); updated 25 Nov 2026 ~02:55 NPT
+(§2.7–2.8, §4.5, §4.8 new, §7 limits 16–19, §8, §9, §10:
+scale re-checks, stall evidence, swap redo, ~50–70%
+attribution, failure-first order, publication-safety scrub).
+Not committed, not pushed. The next update follows the 10x6,000
+measurement, the stall-gate decision, and the resource-reduction
+sweep results.*

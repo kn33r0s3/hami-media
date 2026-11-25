@@ -1,34 +1,10 @@
-# Binaries and build output
+# Built binary — never commit it. A binary built without -trimpath embeds
+# the builder's home-directory paths (529 leaked paths were found in one).
 /hami-media
-/hami-media.exe
-*.exe
-*.test
-*.out
+hami-media
 
-# Go workspace files
-go.work
-go.work.sum
+# Run logs and measurement output stay out of the repo.
+*.log
 
-# Test artefacts
-*.prof
-*.pprof
-cpu.prof
-heap.prof
-*.jsonl
-/tmp/
-
-# Editor and OS files
+# macOS Finder metadata.
 .DS_Store
-Thumbs.db
-.idea/
-.vscode/
-*.swp
-*~
-
-# Local secrets — never commit these
-*.key
-*.pem
-*.p12
-hmac-key.txt
-turn-password.txt
-.env

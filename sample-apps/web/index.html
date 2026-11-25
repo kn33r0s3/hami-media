@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Hami web prototype — unsupported</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>body{font-family:system-ui,sans-serif;max-width:720px;margin:2em auto;padding:0 1em}video{width:100%;background:#111}button{margin:.25em;padding:.5em 1em}</style>
+</head>
+<body>
+<h1>Hami web prototype</h1>
+<p role="alert"><strong>Unsupported prototype.</strong> This page does not connect to the current Hami server. Do not enter tokens or enable the controls. See <a href="../../docs/sdk.md">SDK status</a>.</p>
+<fieldset disabled>
+<label>Server URL <input id="server" value="http://127.0.0.1:9000" size="32"></label><br>
+<label>Room <input id="room" value="demo-room"></label><br>
+<label>Token <input id="token" size="40" placeholder="disabled"></label><br>
+<button id="join">Join</button>
+<button id="publish">Publish camera</button>
+<button id="leave">Leave</button>
+<label>Layer
+<select id="layer"><option value="top">top 720p</option><option value="middle">middle 360p</option><option value="base">base 180p</option></select>
+</label>
+<span>Controls disabled: no public signaling API</span>
+</fieldset>
+<span id="status">idle</span>
+<video id="local" autoplay muted playsinline></video>
+<video id="remote" autoplay playsinline></video>
+<pre id="log"></pre>
+<script src="../sdk/web/hami.js"></script>
+<script>
+const $ = (id) => document.getElementById(id);
+let client = null, stream = null;
+function log(m) { $('log').textContent += m + '\n'; }
+$('join').onclick = async () => {
+  client = new HamiClient({ serverUrl: $('server').value, token: $('token').value, room: $('room').value,
+    onTrack: (track, streams) => { $('remote').srcObject = streams[0]; log('remote track: ' + track.kind); },
+    onError: (e) => log('error: ' + e.code + ' ' + e.message) });
+  try { await client.join(); $('status').textContent = 'joined ' + $('room').value; log('joined'); }
+  catch (e) { log('join failed: ' + e.code + ' ' + e.message); }
+};
+$('publish').onclick = async () => {
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+    $('local').srcObject = stream;
+    await client.publish(stream); log('publishing');
+  } catch (e) { log('publish failed: ' + e.message); }
+};
+$('layer').onchange = async () => {
+  try { const r = await client.switchLayer($('layer').value); log('layer ' + r.layer + ' in ' + r.switchMs + ' ms'); }
+  catch (e) { log('switch failed: ' + e.code); }
+};
+$('leave').onclick = async () => { if (client) await client.leave(); if (stream) stream.getTracks().forEach(t => t.stop()); $('status').textContent = 'left'; };
+</script>
+</body>
+</html>

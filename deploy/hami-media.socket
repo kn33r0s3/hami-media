@@ -1,0 +1,15 @@
+# Job 17.2 — socket unit for hami-media.
+# systemd passes the listening socket as fd 3, which runM7HSFUServer
+# adopts as its HTTP listener. Loopback-only by design: the server's
+# /health and /metrics endpoints are loopback-only, and signaling must
+# sit behind TLS (see docs/api-auth.md).
+[Unit]
+Description=hami-media WebRTC forwarding server socket
+Documentation=https://github.com/kn33r0s3/hami-media
+
+[Socket]
+ListenStream=127.0.0.1:8080
+Accept=false
+
+[Install]
+WantedBy=sockets.target

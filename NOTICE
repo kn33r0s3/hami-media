@@ -1,0 +1,38 @@
+hami-media
+Copyright 2026 the hami-media contributors
+Licensed under the Apache License, Version 2.0 (see LICENSE).
+
+This product includes software developed by third parties.
+The full license texts live in each dependency's own repository
+and module cache; the summary below is the audit record
+(docs/license-audit-17.5.md). No third-party code is copied into
+this repository; dependencies are used as Go modules.
+
+Third-party components (all from go.mod / go.sum, 25 Nov 2026):
+
+- Pion WebRTC and its companion libraries (webrtc, ice, dtls, sctp,
+  srtp, stun, turn, interceptor, rtcp, rtp, sdp, datachannel, mdns,
+  transport, logging, randutil) — MIT License.
+  Copyright (c) the Pion contributors. See
+  https://github.com/pion/webrtc (and sibling repositories).
+- golang.org/x/crypto, golang.org/x/net, golang.org/x/sys,
+  golang.org/x/term, golang.org/x/text, golang.org/x/time —
+  BSD 3-Clause License. Copyright 2009 The Go Authors.
+- github.com/google/uuid — BSD 3-Clause License.
+  Copyright (c) 2009,2014 Google Inc.
+- github.com/wlynxg/anet — BSD 3-Clause License.
+- github.com/davecgh/go-spew — ISC License.
+  Copyright (c) 2012-2016 Dave Collins.
+- github.com/onsi/ginkgo, github.com/onsi/gomega — MIT License.
+  Copyright (c) 2013-2014 Onsi Fakhouri.
+- github.com/pmezard/go-difflib — BSD 3-Clause License.
+  Copyright (c) 2013, Patrick Mezard.
+- github.com/sclevine/agouti — MIT License.
+  Copyright (c) 2014 Stephen Levine.
+- github.com/stretchr/testify — MIT License.
+- go.yaml.in/yaml/v3 — MIT License.
+- gopkg.in/yaml.v3 — MIT and Apache License (dual).
+
+No dependency in this build is under a copyleft license (no GPL,
+LGPL, AGPL, MPL). See docs/license-audit-17.5.md for the per-module
+table and the method.

@@ -1,0 +1,38 @@
+# 14.3 Dashboards and alerts — files
+# (rules are also in observability.go clusterDAlertRules(); keep them in sync)
+
+groups:
+  - name: hami-media
+    rules:
+      - alert: HighQueueDrops
+        expr: hami_media_room_packets_total{kind="packets_dropped"} > 100
+        for: 60s
+        labels:
+          severity: warning
+        annotations:
+          summary: "Queue drops above 100 for 60s"
+          runbook: "docs/cluster-d/14-runbook.md#high-queue-drops"
+      - alert: NoForwarding
+        expr: hami_sfu_rtp_forwarded_packets_total == 0
+        for: 0s
+        labels:
+          severity: critical
+        annotations:
+          summary: "No packets forwarded"
+          runbook: "docs/cluster-d/14-runbook.md#no-forwarding"
+      - alert: RoomCountHigh
+        expr: hami_sfu_tracks > 1000
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Room/track count above 1000"
+          runbook: "docs/cluster-d/14-runbook.md#room-count-high"
+      - alert: KeyframeRecoverySlow
+        expr: hami_sfu_rtp_keyframe_recovery_seconds_max > 2
+        for: 60s
+        labels:
+          severity: warning
+        annotations:
+          summary: "Keyframe recovery slower than 2s"
+          runbook: "docs/cluster-d/14-runbook.md#keyframe-recovery-slow"

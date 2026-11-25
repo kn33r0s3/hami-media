@@ -56,7 +56,6 @@ import (
 	"fmt"
 	"net/http"
 	"os"
-	"runtime"
 	"strings"
 	"time"
 )
@@ -120,21 +119,7 @@ func newSFUAuthVerifier(key []byte, room string) (*sfuAuthVerifier, error) {
 
 // readSFUKeyFile reads the key from a file that only its owner can read.
 func readSFUKeyFile(path string) ([]byte, error) {
-	info, err := os.Stat(path)
-	if err != nil {
-		return nil, fmt.Errorf("stat HMAC key file: %w", err)
-	}
-	if !info.Mode().IsRegular() {
-		return nil, errors.New("HMAC key path must be a regular file")
-	}
-	if runtime.GOOS != "windows" && info.Mode().Perm()&0o077 != 0 {
-		return nil, fmt.Errorf("HMAC key file mode is %04o; it must not be readable by group or others (run chmod 600)", uint32(info.Mode().Perm()))
-	}
-	raw, err := os.ReadFile(path)
-	if err != nil {
-		return nil, fmt.Errorf("read HMAC key file: %w", err)
-	}
-	return []byte(strings.TrimSpace(string(raw))), nil
+	return readOwnerOnlySecretFile(path, "HMAC key file")
 }
 
 // loadSFUAuthKey returns the HMAC key from exactly one configured source.

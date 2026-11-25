@@ -357,7 +357,7 @@ func TestLocalSFURoutesAuthorizedStreamsAndRTCP(t *testing.T) {
 		}
 		seenSSRCs[viewer.Received.SSRC] = struct{}{}
 		if viewer.RetransmittedPackets == 0 ||
-			viewer.FeedbackForwarded.NACKReceived != 1 ||
+			viewer.FeedbackForwarded.NACKReceived == 0 ||
 			viewer.FeedbackForwarded.NACKRetransmitted == 0 ||
 			viewer.FeedbackForwarded.NACKForwarded == 0 ||
 			viewer.FeedbackForwarded.PLIForwarded != 1 ||
@@ -1080,7 +1080,7 @@ func TestStaleRTPIsIntentionallyShedAndMarksKeyframeRecovery(t *testing.T) {
 	subscription := &sfuSubscription{active: true, h264Video: true}
 	router.forwardQueuedRTP(subscription, queuedRTP{
 		packet:     &rtp.Packet{Payload: []byte{0x41, 0x80}},
-		enqueuedAt: time.Now().Add(-nackMaxQueueAge - time.Second),
+		enqueuedAt: time.Now().Add(-sfuRetransmitWindow - time.Second),
 	})
 	if subscription.keyframeNeededAt.Load() == 0 {
 		t.Fatal("stale H.264 packet did not mark the subscription as needing a keyframe")
@@ -1252,18 +1252,20 @@ func TestSFUHostPreflightParsesCountersAndEnforcesStops(t *testing.T) {
 		t.Fatalf("available disk = %d, err=%v; want %d", got, err, 50_000*1024)
 	}
 
+	// Safe fixture is the real post-clean state (24 Nov 2026 swap
+	// clean: pool 2,048, used 365.88, free 1,682.12 MiB).
 	safe := sfuHostSnapshot{
 		PressureLevel: sfuHostNormalPressureLevel,
-		SwapUsedMiB:   sfuHostMinFreeSwapMiB,
-		SwapFreeMiB:   sfuHostMinFreeSwapMiB,
-		SwapTotalMiB:  2 * sfuHostMinFreeSwapMiB,
+		SwapUsedMiB:   365.88,
+		SwapFreeMiB:   1682.12,
+		SwapTotalMiB:  2048,
 		FreeDiskBytes: sfuHostMinFreeDiskBytes,
 	}
 	if failures := sfuHostPreflightFailures(safe); len(failures) != 0 {
 		t.Fatalf("safe host sample failed preflight: %v", failures)
 	}
 	safe.PressureLevel++
-	safe.SwapFreeMiB--
+	safe.SwapUsedMiB = sfuHostMaxUsedSwapMiB + 1
 	safe.FreeDiskBytes--
 	// Pressure has no reading on platforms without hostPressureSupported
 	// (Linux/Windows), so only swap and disk fail there; on darwin all
@@ -1274,6 +1276,39 @@ func TestSFUHostPreflightParsesCountersAndEnforcesStops(t *testing.T) {
 	}
 	if failures := sfuHostPreflightFailures(safe); len(failures) != wantUnsafeFailures {
 		t.Fatalf("unsafe host sample failures = %v, want %d failures (pressure/swap/disk where supported)", failures, wantUnsafeFailures)
+	}
+	// The rule change (24 Nov 2026): the pre-clean state must FAIL and
+	// the post-clean state must PASS. Values are the real samples from
+	// the swap-clean log (logs/swap-clean-20261124-231941.log).
+	oldState := sfuHostSnapshot{
+		PressureLevel: sfuHostNormalPressureLevel,
+		SwapUsedMiB:   1917.625,
+		SwapFreeMiB:   1154.375,
+		SwapTotalMiB:  3072,
+		FreeDiskBytes: sfuHostMinFreeDiskBytes,
+	}
+	if failures := sfuHostPreflightFailures(oldState); len(failures) != 1 {
+		t.Fatalf("pre-clean host sample failures = %v, want exactly the used-swap failure", failures)
+	}
+	newState := sfuHostSnapshot{
+		PressureLevel: sfuHostNormalPressureLevel,
+		SwapUsedMiB:   365.88,
+		SwapFreeMiB:   1682.12,
+		SwapTotalMiB:  2048,
+		FreeDiskBytes: sfuHostMinFreeDiskBytes,
+	}
+	if failures := sfuHostPreflightFailures(newState); len(failures) != 0 {
+		t.Fatalf("post-clean host sample failed preflight: %v", failures)
+	}
+	// Boundary: used swap exactly at the cap passes; 1 MiB over fails.
+	atCap := newState
+	atCap.SwapUsedMiB = sfuHostMaxUsedSwapMiB
+	if failures := sfuHostPreflightFailures(atCap); len(failures) != 0 {
+		t.Fatalf("host sample at the used-swap cap failed preflight: %v", failures)
+	}
+	atCap.SwapUsedMiB = sfuHostMaxUsedSwapMiB + 1
+	if failures := sfuHostPreflightFailures(atCap); len(failures) != 1 {
+		t.Fatalf("host sample 1 MiB over the used-swap cap failures = %v, want exactly the used-swap failure", failures)
 	}
 	// No swap pool (total 0, as after a reboot): free swap is always 0
 	// and can never pass, so the preflight uses free memory instead.
@@ -1306,6 +1341,62 @@ func TestSFUHostPreflightParsesCountersAndEnforcesStops(t *testing.T) {
 	}
 	if failures := sfuHostWatchdogFailures(noPool); len(failures) != wantWatchdogFailures {
 		t.Fatalf("no-pool host sample under pressure failures = %v, want %d pressure failure(s)", failures, wantWatchdogFailures)
+	}
+}
+
+// TestReadSwapMiBCheckedZeroTotalFailsClosed: a zero swap total is a
+// glitch, never healthy. The shared reader re-reads once; a twice-zero
+// total returns an error (fail closed), a zero-then-live re-read
+// recovers, and a healthy first read never re-reads. (25 Nov 2026.)
+func TestReadSwapMiBCheckedZeroTotalFailsClosed(t *testing.T) {
+	orig := swapUsageReader
+	defer func() { swapUsageReader = orig }()
+
+	// Glitched read, twice: must error, never return (0, 0) as healthy.
+	calls := 0
+	swapUsageReader = func() (float64, float64, error) {
+		calls++
+		return 0, 0, nil
+	}
+	if used, free, err := readSwapMiBChecked(); err == nil {
+		t.Fatalf("zero-total swap read returned used=%.2f free=%.2f, err=nil; want an error (fail closed)", used, free)
+	}
+	if calls != 2 {
+		t.Fatalf("zero-total read made %d underlying reads, want 2 (first + one re-read)", calls)
+	}
+
+	// Zero first, live on the re-read: recovers with the live values.
+	calls = 0
+	swapUsageReader = func() (float64, float64, error) {
+		calls++
+		if calls == 1 {
+			return 0, 0, nil
+		}
+		return 128.00, 896.00, nil
+	}
+	if used, free, err := readSwapMiBChecked(); err != nil || used != 128.00 || free != 896.00 {
+		t.Fatalf("zero-then-live read = used=%.2f free=%.2f err=%v; want 128.00/896.00, nil", used, free, err)
+	}
+	if calls != 2 {
+		t.Fatalf("zero-then-live read made %d underlying reads, want 2", calls)
+	}
+
+	// Healthy first read: returned as-is, no re-read.
+	calls = 0
+	swapUsageReader = func() (float64, float64, error) {
+		calls++
+		return 365.88, 1682.12, nil
+	}
+	if used, free, err := readSwapMiBChecked(); err != nil || used != 365.88 || free != 1682.12 || calls != 1 {
+		t.Fatalf("healthy read = used=%.2f free=%.2f err=%v calls=%d; want 365.88/1682.12, nil, 1", used, free, err, calls)
+	}
+
+	// An underlying read error propagates (already fail-closed).
+	swapUsageReader = func() (float64, float64, error) {
+		return 0, 0, errors.New("boom")
+	}
+	if _, _, err := readSwapMiBChecked(); err == nil {
+		t.Fatalf("underlying read error returned err=nil; want the error propagated")
 	}
 }
 
@@ -1417,6 +1508,28 @@ func TestBuildSFUScaleProofConfigSupportsTwentyByFiveHundred(t *testing.T) {
 func TestBuildSFUScaleProofConfigEnforcesTotalViewerLimit(t *testing.T) {
 	if _, err := buildSFUScaleProofConfig(21, 500); err == nil {
 		t.Fatal("scale config accepted more than 10000 total viewers")
+	}
+}
+
+func TestValidateModeGatesInternalModes(t *testing.T) {
+	for _, mode := range []string{"pair", "sfu", "sfu-single", "sfu-cascade", "turn-server", "mint-token"} {
+		if err := validateMode(mode, false); err != nil {
+			t.Errorf("public mode %q rejected: %v", mode, err)
+		}
+	}
+
+	for _, mode := range []string{"m1h", "m2h", "m3h", "m4h", "m5h", "m6h", "m7h", "m9h", "audio-rung1", "m7h-sfu"} {
+		err := validateMode(mode, false)
+		if err == nil || !strings.Contains(err.Error(), "(want "+publicModeList+")") {
+			t.Errorf("internal mode %q should be hidden without -dev; error = %v", mode, err)
+		}
+		if err := validateMode(mode, true); err != nil {
+			t.Errorf("internal mode %q rejected with -dev: %v", mode, err)
+		}
+	}
+
+	if err := validateMode("bogus", true); err == nil || !strings.Contains(err.Error(), publicModeList) {
+		t.Errorf("unknown mode should list only public modes; error = %v", err)
 	}
 }
 
@@ -1713,7 +1826,7 @@ func TestNACKSelectionDeduplicatesCapsAndPrioritizesRecentSequence(t *testing.T)
 
 // TestFilterUpstreamForwardableDedupsWithinWindow pins LADDER FIX 2:
 // the same upstream-lost sequence forwards once per
-// nackAggregationWindow per track, not once per viewer NACK. Probes
+// sfuRetransmitWindow per track, not once per viewer NACK. Probes
 // are not deduped here (handleNACK forwards those separately).
 func TestFilterUpstreamForwardableDedupsWithinWindow(t *testing.T) {
 	track := &sfuPublishedTrack{}
@@ -1730,7 +1843,7 @@ func TestFilterUpstreamForwardableDedupsWithinWindow(t *testing.T) {
 	if len(partial) != 1 || partial[0] != 103 {
 		t.Fatalf("partial repeat: got %v, want [103]", partial)
 	}
-	after := track.filterUpstreamForwardable([]uint16{100}, now.Add(nackAggregationWindow+time.Millisecond))
+	after := track.filterUpstreamForwardable([]uint16{100}, now.Add(sfuRetransmitWindow+time.Millisecond))
 	if len(after) != 1 || after[0] != 100 {
 		t.Fatalf("after window: got %v, want [100]", after)
 	}

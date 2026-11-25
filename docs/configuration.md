@@ -4,7 +4,7 @@ Run `./hami-media -h` for the full flag list. This page covers the flags and set
 
 ## Modes
 
-One binary, many modes. `-mode` picks the job.
+One binary, several public modes. `-mode` picks the job.
 
 | Mode | What it does |
 |---|---|
@@ -12,11 +12,13 @@ One binary, many modes. `-mode` picks the job.
 | `sfu` | Local SFU proof run. |
 | `sfu-single` | The scale proof: N publishers, M viewers each, one room. |
 | `sfu-cascade` | SFU proof across worker processes. |
-| `m1h` … `m9h` | Ladder proof runs of growing size. `m9h` is the 10,000-viewer event shape. |
-| `m7h-sfu` | The real server process. Spawned by the harness; see below. |
 | `mint-token` | Print one client token and exit. |
 | `turn-server` | Run the standalone TURN relay until stopped. |
-| `audio-rung1` | Audio-only proof run (speakers and listeners). |
+
+Internal proof and server modes are hidden by default. Pass `-dev` to
+use `m1h`–`m7h`, `m9h`, `audio-rung1`, or the harness-only `m7h-sfu`
+server process. These modes are intended for local development and
+benchmarking, not normal operation.
 
 ## Scale flags (`-mode sfu-single`)
 
@@ -82,6 +84,7 @@ Check the detector's answer without starting a server: `./hami-media capacity`. 
 | `HAMI_SFU_TURN_LISTEN` | Where `-mode turn-server` listens. Default `127.0.0.1:3478`. |
 | `HAMI_SFU_EGRESS_SHARDS` | Egress shard count, 0–32. 0 is the default. |
 | `GOMEMLIMIT` | Go heap limit. If unset, the binary sets a 4 GiB default. |
+| `GOGC` | Go GC target percentage. Default 100. Lower values collect more often (less heap, more CPU); aggressive values cost frames — GOGC 20 lost frames on 3 of 20 tracks at 20 x 8,000, GOGC 50 lost frames on 1 track, default lost none. |
 | `HAMI_HEAP_PROFILE_PATH` | Write a heap profile when heap use passes `HAMI_HEAP_PROFILE_AT_BYTES` (default 512 MiB). |
 | `HAMI_CPU_PROFILE_PATH` | Write a CPU profile, starting after `HAMI_CPU_PROFILE_DELAY` (default 90 s) for `HAMI_CPU_PROFILE_WINDOW`. |
 | `HAMI_READQUEUE_SAMPLE` | Set to `1` to sample the read queue (diagnostics only). |
@@ -92,4 +95,5 @@ The HMAC key must be at least 32 characters. The server refuses to start without
 
 - The binary sets a 4 GiB Go heap limit when `GOMEMLIMIT` is unset. A bare run cannot grow without limit.
 - `-mode sfu-single` and `-mode m9h` pick a heap budget from the viewer count unless you pass `-max-heap-bytes`. The run stops cleanly when the budget is hit.
-- The host health check wants 2 GiB of free swap, or 8 GiB of free memory when the machine has no swap pool at all (as after a reboot), and 10 GiB of free disk. See [capacity.md](capacity.md).
+- The host health check wants used swap at most 512 MiB when the machine holds a swap pool, or 8 GiB of free memory when it has no swap pool at all (as after a reboot), and 10 GiB of free disk. See [capacity.md](capacity.md). One edge case is open: a swap total reading 0 twice is treated as unknown and fails closed (never healthy), so no-swap protection is unverified in that edge case until the zero-reading glitch is identified.
+- Tuned configs measured at 20 x 8,000 (strict): the default env (GOMEMLIMIT 10 GiB, default GC) passed 3 times at p99 24–26 ms, peak RSS 4.69–5.67 GiB; GOMEMLIMIT 6 GiB + GOGC 50 passed once at p99 24.39 ms, peak RSS 5.115 GiB. Run-to-run RSS spread is ~1 GiB, so neither config is proven better on memory — the default env wins on frame-cleanliness (2/2 strict passes with zero short frames). See REPORT.md §4.5.

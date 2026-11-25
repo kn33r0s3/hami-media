@@ -1,0 +1,20 @@
+# .github/workflows/ci.yml — loopback integration job (job 15.3)
+# Include verbatim in the workflow owned by cluster A. Runs the full
+# suite (which includes the loopback integration tests) on every push
+# and pull request. See docs/ci.md for the known runner difference:
+# the six UDP tests fail only in the VM sandbox, never on a real runner.
+loopback-integration:
+  runs-on: ubuntu-latest
+  steps:
+    - uses: actions/checkout@v4
+    - uses: actions/setup-go@v5
+      with:
+        go-version: "1.24"
+    - name: gofmt
+      run: test -z "$(gofmt -l .)"
+    - name: go vet
+      run: go vet ./...
+    - name: leak scan
+      run: ./scripts/leak-scan.sh .
+    - name: tests (unit + loopback integration)
+      run: go test ./...

@@ -6,6 +6,8 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
+	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
@@ -65,7 +67,20 @@ const (
 	sfuDefaultEgressShardCount = 0
 	sfuEgressShardQueueSize    = 64
 	sfuHostNormalPressureLevel = 1
-	sfuHostMinFreeSwapMiB      = 2048
+	// sfuHostMaxUsedSwapMiB is the maximum swapped-out memory tolerated
+	// when macOS holds a swap pool. It replaces the old
+	// sfuHostMinFreeSwapMiB = 2048 floor (free swap >= 2,048 MiB).
+	// The old rule can never pass: macOS resizes the pool to the live
+	// pressure, so free swap is capped by the pool size - after the
+	// 24 Nov 2026 swap clean the pool shrank 3,072 -> 2,048 MiB and
+	// free swap is 1,682 MiB, so free >= 2,048 would need used ~= 0.
+	// Used swap is the distress signal (pages actually forced out of
+	// RAM); free swap is pool accounting. The rule must FAIL the
+	// pre-clean state (pool 3,072, used 1,918, free 1,154) and PASS
+	// the post-clean state (pool 2,048, used 366, free 1,682):
+	// 1,918 > 512 fails, 366 <= 512 passes. Memory pressure level
+	// (NORMAL) stays a separate, independent check.
+	sfuHostMaxUsedSwapMiB = 512
 	// sfuHostMinFreeMemNoSwapMiB is the free-memory headroom required
 	// when macOS holds no swap pool (total swap 0, as after a reboot):
 	// free swap is always 0 there and can never pass the swap rule,
@@ -74,15 +89,27 @@ const (
 	sfuHostMinFreeMemNoSwapMiB    = 8192
 	sfuHostMinFreeDiskBytes       = 10 << 30
 	sfuHostPreflightRetryInterval = 10 * time.Minute
+	// Job 4.3: ONE retransmit window. A single millisecond deadline
+	// value (sfuRetransmitWindow, default 500 ms, set by
+	// -nack-max-queue-age) drives all three retransmit horizons: the
+	// queue age before stale RTP is dropped (forwardQueuedRTP), the
+	// NACK aggregation/dedup window (selectNACKSequences,
+	// filterUpstreamForwardable), and the per-track packet-cache
+	// horizon (rememberPacket evicts packets older than the window).
+	// The 512-packet ring stays as a hard cap, not a horizon: at 5 fps
+	// it would otherwise hold ~34 s of packets. The window is safe
+	// with nackGapMaxAttempts = 1 (no NACK retries): detection is ~one
+	// frame interval (~200 ms at 5 fps), inside the window; a retry at
+	// 600 ms would find its packet evicted, so re-enabling retries
+	// needs a window above the retry interval.
 	// NACK aggregation (M6-H attempt 8): a viewer NACKs the same lost
-	// sequences on every RTCP interval, and retransmitting each one again
-	// drowns the router (16.7M retransmits for 306k NACKs in attempt 7)
-	// and starves the subscription's ReadRTCP loop, so PLI/FIR never get
-	// read. Remember each retransmitted sequence for this long and skip
-	// duplicates inside the window; serve at most this many sequences
-	// from one NACK and let the viewer re-NACK the rest.
-	// Split forwarded NACKs at Pion's per-report limit below.
-	nackAggregationWindow = 500 * time.Millisecond
+	// sequences on every RTCP interval, and retransmitting each one
+	// again drowns the router (16.7M retransmits for 306k NACKs in
+	// attempt 7) and starves the subscription's ReadRTCP loop, so
+	// PLI/FIR never get read. Remember each retransmitted sequence for
+	// one window and skip duplicates inside it; serve at most
+	// maxSequencesPerNACK sequences from one NACK and let the viewer
+	// re-NACK the rest.
 	// FIX 31: mid-run NACK recovery. The viewer light API has no Pion
 	// NACK generator (it was the NACK-storm source), so the viewer
 	// ReadRTP loop detects sequence gaps itself (nackGapTracker) and
@@ -116,12 +143,23 @@ const (
 	// Pion's NACK marshaler requires len(Nacks)+2 <= MaxUint8.
 	maxNACKPairsPerRTCPPacket = math.MaxUint8 - 2
 	nackQueueSize             = 64
-	defaultNACKMaxQueueAge    = 500 * time.Millisecond
+	defaultRetransmitWindow   = 500 * time.Millisecond
 	sfuProcessNACKBudget      = 2048
-	// Legacy name retained for the configurable max age of queued RTP
-	// media. The separate NACK feedback queue has no age limit here.
-	nackFeedbackMaxQueueAge = 10 * time.Second
-	sfuRTPQueueSize         = 64
+	// Job 4.5: NACK feedback-age profiles. A queued NACK (or PLI/FIR)
+	// is stale when it has waited longer than the profile's age —
+	// the interactive profile drops stale feedback fastest (a
+	// retransmit that arrives 100 ms late is useless to a live call),
+	// recording tolerates the longest wait (a recording can absorb a
+	// 2 s-old NACK; the frame still lands). The profile is a
+	// per-subscription value, set from the router default at
+	// subscribe(); the zero value is broadcast. These are technical
+	// presets, not the product latency decision (job 19.4, owner
+	// written).
+	nackProfileInteractive sfuNACKProfile = "interactive"
+	nackProfileBroadcast   sfuNACKProfile = "broadcast"
+	nackProfileRecording   sfuNACKProfile = "recording"
+
+	sfuRTPQueueSize = 64
 	// FIX 2: recent-window size for the per-viewer received-sequence set
 	// (sfuViewerCapture.sequenceCounts). Duplicates are retransmits of
 	// recent packets (within ~500 ms, a handful of sequences), so a
@@ -182,7 +220,7 @@ const (
 	sfuScoringDissolve = "dissolve"
 )
 
-var nackMaxQueueAge = defaultNACKMaxQueueAge
+var sfuRetransmitWindow = defaultRetransmitWindow
 
 // routerUDPMuxMode is linker-overridable for local transport isolation runs.
 var routerUDPMuxMode = "enabled"
@@ -278,6 +316,21 @@ var m7hCPUProfilePath = flag.String(
 	"optional temporary-directory path prefix for a bounded M7-H CPU profile captured 30 seconds into streaming",
 )
 
+// Job 3.2: the frame rate of the raw H.264 input. Required whenever
+// --video-file is given: a raw Annex-B stream carries no frame rate,
+// and without it the harness cannot know the send interval (job 3.1).
+var frameRateFlag = flag.Float64(
+	"frame-rate",
+	0,
+	"frames per second of the raw H.264 input (required with --video-file; 1-120)",
+)
+
+// configuredVideoInterval is the send interval derived from
+// -frame-rate in main(). Proof builders use it when set and keep
+// their historical 200 ms otherwise, so in-process callers and tests
+// that build configs directly are unaffected.
+var configuredVideoInterval time.Duration
+
 type streamSnapshot struct {
 	Codec               string `json:"codec"`
 	SSRC                uint32 `json:"ssrc"`
@@ -355,6 +408,12 @@ type proofResult struct {
 type sfuTrackKey struct {
 	PublisherID string `json:"publisher_id"`
 	TrackID     string `json:"track_id"`
+	// Layer is the simulcast layer (the remote track's RID, e.g.
+	// "0", "1", "2"). Empty for a non-simulcast track. Two layers
+	// of one publisher track share PublisherID+TrackID and differ
+	// only here (job 2.6); without it the second layer overwrote
+	// the first in the router's track map.
+	Layer string `json:"layer,omitempty"`
 }
 
 type sfuFeedbackCounts struct {
@@ -499,6 +558,12 @@ func sfuMeasurementPass(result sfuProofResult, expectedViewers int, exerciseRTCP
 			pass = false
 		}
 	}
+	// Job 5.6: the stall gate — the median viewer p99 must stay at or
+	// below 50 ms. Control A (104.91 ms) fails it; every passing run
+	// on record passes it with >= 1.6x margin.
+	if !evaluateStallGate(sfuProofP99Median(result)) {
+		pass = false
+	}
 	return pass
 }
 
@@ -567,6 +632,18 @@ func sfuDissolveMeasurementPass(
 			pass = false
 		}
 	}
+	// Job 5.6 (corrected): the stall gate does NOT apply here. The
+	// gate was proven for the strict measurement pass (control A +
+	// the in-process controls, all strict-mode). Dissolve scoring is
+	// a separate regime whose latency bound is the configured
+	// maxP99 per viewer — TestSFUDissolveScoringUsesSynthetic
+	// DeliveredLatencyAndConfiguredLimits records that it accepts a
+	// 120 ms p99 at maxP99=150 ms, a latency the strict recorder
+	// rejects. Wiring the 50 ms median gate in here broke that
+	// test (full suite, 7 failures) and would kill the dissolve
+	// mode's design for the median viewer. Whether dissolve mode
+	// should also carry the median gate is an open design question
+	// for the coordinator, not a unilateral change.
 	return pass
 }
 
@@ -623,20 +700,84 @@ func sfuHostWatchdogFailures(snapshot sfuHostSnapshot) []string {
 	return failures
 }
 
+// swapUsageReader is the swap-usage source behind readSwapMiBChecked.
+// It is a variable (not a direct call) so tests can stub a glitched
+// zero-total read without touching the kernel.
+var swapUsageReader = readAudioSwapMiB
+
+// readSwapMiBChecked is the single shared swap reader for every guard
+// and every diagnostic that reads swap: the scale-run preflight
+// (readSFUHostSnapshot), the in-run host watchdog
+// (readSFUHostSnapshotLive), the audio-rung guard and progress reads,
+// and the capacity detector (detectDeviceProfile). The fix for the
+// zero-total edge case lives here and nowhere else, so every caller
+// gets it.
+//
+// A zero total (used 0, free 0) is a glitch, never a healthy reading.
+// The terminal zero-reading glitch (25 Nov 2026 swap redo) returns 0
+// for a live pool, and a genuine no-pool state is indistinguishable
+// from the glitch by this read alone. So a zero total is re-read once
+// (both reads are logged); if it still reads zero, this helper
+// returns an error - fail closed / unknown, never OK. Callers treat
+// the error as a refusal: the preflight retries as UNKNOWN, the
+// watchdog aborts the run, the audio rung refuses to start, the
+// detector fails instead of printing figures.
+//
+// Consequence, stated plainly: until the glitch is identified, the
+// no-pool case is UNVERIFIED in this edge case. The documented 8 GiB
+// free-memory rule (sfuHostMinFreeMemNoSwapMiB) is the intended rule
+// for a genuine no-pool machine, and the no-pool branch of
+// sfuHostMemoryFailures is retained for it - but the live path can
+// no longer reach that branch with a zero total, because this reader
+// fails closed first. A freshly rebooted Mac with no swap pool will
+// therefore sit at host_preflight=UNKNOWN (retrying) until the pool
+// appears or the glitch is identified and the case is closed.
+func readSwapMiBChecked() (used, free float64, err error) {
+	used, free, err = swapUsageReader()
+	if err != nil {
+		return 0, 0, err
+	}
+	if used != 0 || free != 0 {
+		return used, free, nil
+	}
+	fmt.Fprintf(os.Stderr, "swap_read_zero_total=glitch? re-reading once\n")
+	used, free, err = swapUsageReader()
+	if err != nil {
+		return 0, 0, err
+	}
+	fmt.Fprintf(os.Stderr, "swap_reread used=%.2f free=%.2f total=%.2f\n", used, free, used+free)
+	if used != 0 || free != 0 {
+		return used, free, nil
+	}
+	return 0, 0, errors.New("swap total reads 0 twice; treating as unknown, never healthy (swap redo 25 Nov 2026)")
+}
+
 // sfuHostMemoryFailures checks the memory headroom. When macOS holds a
-// swap pool, free swap is the signal. When it holds no pool (total swap
-// 0, as after a reboot), free swap is always 0 and can never pass, so
+// swap pool, used swap is the signal: the run is refused while more
+// than sfuHostMaxUsedSwapMiB is swapped out. (Free swap is NOT the
+// signal - macOS resizes the pool, so free swap is capped by the live
+// pool size and the old free >= 2,048 MiB floor could never pass once
+// the pool shrank to 2,048 MiB.) When it holds no pool (total swap 0,
+// as after a reboot), free swap is always 0 and can never pass, so
 // reclaimable free memory (free + inactive + speculative) is the signal
-// instead — but only for the pre-run gate (forWatchdog=false). During a
-// run the test itself consumes RAM, so the watchdog skips the memory
-// check and relies on pressure level.
+// instead, but only for the pre-run gate (forWatchdog=false). During a
+// run the test itself consumes RAM, so the watchdog skips the no-pool
+// free-memory check and relies on pressure level plus the used-swap
+// check.
+// Zero-total edge case (25 Nov 2026): a snapshot with SwapTotalMiB 0
+// reaches this branch only from a fixture or a future reader that can
+// distinguish a genuine no-pool state from the zero-reading glitch.
+// The live path cannot feed it one: readSwapMiBChecked fails closed
+// on a twice-zero total before any snapshot is built. Until the
+// glitch is identified, no-swap protection is UNVERIFIED in this edge
+// case - this branch is the intended 8 GiB rule, not a proven one.
 func sfuHostMemoryFailures(snapshot sfuHostSnapshot, forWatchdog bool) []string {
 	if snapshot.SwapTotalMiB > 0 {
-		if snapshot.SwapFreeMiB < sfuHostMinFreeSwapMiB {
+		if snapshot.SwapUsedMiB > sfuHostMaxUsedSwapMiB {
 			return []string{fmt.Sprintf(
-				"free swap %.2f MiB is below %d MiB",
-				snapshot.SwapFreeMiB,
-				sfuHostMinFreeSwapMiB,
+				"used swap %.2f MiB is above %d MiB",
+				snapshot.SwapUsedMiB,
+				sfuHostMaxUsedSwapMiB,
 			)}
 		}
 		return nil
@@ -845,7 +986,8 @@ func main() {
 		}
 		return
 	}
-	mode := flag.String("mode", "pair", "local proof mode: pair, sfu, sfu-single, sfu-cascade, m1h, m2h, m3h, m4h, m5h, m6h, m7h, m9h, or audio-rung1")
+	mode := flag.String("mode", "pair", "mode: pair, sfu, sfu-single, sfu-cascade, turn-server, or mint-token")
+	dev := flag.Bool("dev", false, "enable internal proof and server modes")
 	videoPath := flag.String("video-file", "", "local Annex-B H.264 source file")
 	duration := flag.Duration("duration", 3*time.Second, "local media send duration")
 	audioSpeakers := flag.Int("audio-speakers", 10, "speaker count for audio-rung1 mode")
@@ -885,10 +1027,10 @@ func main() {
 		"explicitly bypass the scale-proof host preflight and watchdog for this local invocation",
 	)
 	flag.DurationVar(
-		&nackMaxQueueAge,
+		&sfuRetransmitWindow,
 		"nack-max-queue-age",
-		nackMaxQueueAge,
-		"maximum queue age before stale RTP is dropped",
+		sfuRetransmitWindow,
+		"the single retransmit window: maximum queue age before stale RTP is dropped, NACK aggregation window, and packet-cache horizon",
 	)
 	sfuFrameDiagnosticOutput := flag.String(
 		"sfu-frame-diagnostic-output",
@@ -927,6 +1069,9 @@ func main() {
 	maxPublishers := flag.Int("max-publishers", 0, "maximum concurrent publishers for the m7h-sfu server; 0 means use the auto-detected limit (or the highest measured anchor when -auto-capacity=false); an explicit 0 means unlimited")
 	maxSubscribers := flag.Int("max-subscribers", 0, "maximum concurrent subscribers (viewers) for the m7h-sfu server; 0 means use the auto-detected limit (or the highest measured anchor when -auto-capacity=false); an explicit 0 means unlimited")
 	flag.Parse()
+	if err := validateMode(*mode, *dev); err != nil {
+		fail("%v", err)
+	}
 	if *sfuScoringMode != sfuScoringStrict && *sfuScoringMode != sfuScoringDissolve {
 		fail("--sfu-score-mode must be %q or %q", sfuScoringStrict, sfuScoringDissolve)
 	}
@@ -939,7 +1084,7 @@ func main() {
 	if *sfuMaxDissolved < 0 || *sfuMaxDissolved > 1 {
 		fail("--sfu-max-dissolved must be between 0 and 1")
 	}
-	if nackMaxQueueAge <= 0 {
+	if sfuRetransmitWindow <= 0 {
 		fail("--nack-max-queue-age must be positive")
 	}
 	if *sfuCells < 1 {
@@ -1092,6 +1237,9 @@ func main() {
 	if *duration <= 0 {
 		fail("--duration must be positive")
 	}
+	// Job 5.8: the media duration for CPU-profile metadata (the send
+	// window is [first send, first send + duration]).
+	cpuProfileSendDurationNanos.Store(duration.Nanoseconds())
 
 	var (
 		videoFrames []media.Sample
@@ -1105,7 +1253,14 @@ func main() {
 		if readErr != nil {
 			fail("read local H.264 source: %v", readErr)
 		}
-		videoFrames, err = readH264Frames(bytes.NewReader(data))
+		// Job 3.2: refuse to run a raw H.264 file without a frame
+		// rate, and stamp the frames with that rate's interval.
+		videoInterval, rateErr := resolveVideoFrameRate(*videoPath, *frameRateFlag)
+		if rateErr != nil {
+			fail("%v", rateErr)
+		}
+		configuredVideoInterval = videoInterval
+		videoFrames, err = readH264FramesWithFrameRate(bytes.NewReader(data), *frameRateFlag)
 		if err != nil {
 			fail("parse local H.264 source: %v", err)
 		}
@@ -1248,7 +1403,7 @@ func main() {
 		case "m4h":
 			result, err = runLocalM4HProof(ctx, videoFrames, *duration)
 		case "m5h":
-			result, err = runLocalM5HProof(ctx, videoFrames, *duration)
+			result, err = runLocalHardwareProof(ctx, videoFrames, *duration)
 		case "m6h":
 			result, err = runLocalM6HProof(ctx, videoFrames, *duration)
 		case "m7h":
@@ -1258,7 +1413,7 @@ func main() {
 		case "audio-rung1":
 			result, err = runLocalAudioRungBothModes(ctx, *duration, *audioSpeakers, *audioListeners)
 		default:
-			fail("unsupported --mode %q (want pair, sfu, sfu-single, sfu-cascade, m1h, m2h, m3h, m4h, m5h, m6h, m7h, m9h, mint-token, turn-server, or audio-rung1)", *mode)
+			fail("unsupported --mode %q (want %s)", *mode, publicModeList)
 		}
 	}
 	cancel()
@@ -1333,7 +1488,7 @@ func startHeapBudgetMonitor(
 	// HAMI_HEAP_PROFILE_AT_BYTES (default 512 MiB). Ranks the remaining
 	// per-viewer heap after the NACK-responder removal; the profile write
 	// itself runs one GC and is off the media path.
-	heapProfilePath := os.Getenv("HAMI_HEAP_PROFILE_PATH")
+	heapProfilePath := profilePathForPID(os.Getenv("HAMI_HEAP_PROFILE_PATH"))
 	heapProfileAtBytes := uint64(512 << 20)
 	if at := os.Getenv("HAMI_HEAP_PROFILE_AT_BYTES"); at != "" {
 		if parsed, err := strconv.ParseUint(at, 10, 64); err == nil && parsed > 0 {
@@ -1349,8 +1504,13 @@ func startHeapBudgetMonitor(
 	// (default 10s, the max writeM7HCPUProfile allows). Run 133 had
 	// no profile, so the send-loop / nackWorker hot path could not be
 	// ranked. The profile write is off the media path except for
-	// pprof's own sampling.
-	if cpuProfilePath := os.Getenv("HAMI_CPU_PROFILE_PATH"); cpuProfilePath != "" {
+	// pprof's own sampling. Job 5.8: for a 60 s run the 90 s default
+	// lands on the send window's edge (the stall evidence shows a
+	// 60 s delay lands at the window's tail end) — use
+	// HAMI_CPU_PROFILE_DELAY=40s..50s for 60 s runs so the 10 s
+	// window sits inside the media window. The profile's companion
+	// JSON (path + ".json") records whether it landed in-window.
+	if cpuProfilePath := profilePathForPID(os.Getenv("HAMI_CPU_PROFILE_PATH")); cpuProfilePath != "" {
 		cpuProfileDelay := 90 * time.Second
 		if d := os.Getenv("HAMI_CPU_PROFILE_DELAY"); d != "" {
 			if parsed, err := time.ParseDuration(d); err == nil && parsed > 0 {
@@ -1377,6 +1537,43 @@ func startHeapBudgetMonitor(
 		}()
 	}
 
+	// Job 5.1: one-shot diagnostic mutex profile for local runs. When
+	// HAMI_MUTEX_PROFILE_PATH is set, capture a mutex profile from
+	// HAMI_MUTEX_PROFILE_DELAY (default 90 s, mid-media for the
+	// 20x5000 run) for HAMI_MUTEX_PROFILE_WINDOW (default 10 s, max
+	// 10 s). The profile records sync.Mutex blocking during the
+	// window; `go tool pprof -top` on it shows which lock held the
+	// forward path. The path is per-pid (profilePathForPID, Job 5.7)
+	// so cells do not truncate each other's file, and a companion
+	// JSON beside it records the window and sample count.
+	if mutexProfilePath := profilePathForPID(os.Getenv("HAMI_MUTEX_PROFILE_PATH")); mutexProfilePath != "" {
+		mutexProfileDelay := 90 * time.Second
+		if d := os.Getenv("HAMI_MUTEX_PROFILE_DELAY"); d != "" {
+			if parsed, err := time.ParseDuration(d); err == nil && parsed > 0 {
+				mutexProfileDelay = parsed
+			}
+		}
+		mutexProfileWindow := 10 * time.Second
+		if w := os.Getenv("HAMI_MUTEX_PROFILE_WINDOW"); w != "" {
+			if parsed, err := time.ParseDuration(w); err == nil && parsed > 0 && parsed <= 10*time.Second {
+				mutexProfileWindow = parsed
+			}
+		}
+		go func() {
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(mutexProfileDelay):
+			}
+			metadata, err := writeMutexProfile(ctx, mutexProfilePath, mutexProfileWindow)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "mutex profile write failed: %v\n", err)
+			} else {
+				fmt.Fprintf(os.Stderr, "mutex profile written: %s delay=%s window=%s samples=%d\n", mutexProfilePath, mutexProfileDelay, mutexProfileWindow, metadata.SampleCount)
+			}
+		}()
+	}
+
 	go func() {
 		defer close(done)
 		ticker := time.NewTicker(heapBudgetPollInterval)
@@ -1392,6 +1589,11 @@ func startHeapBudgetMonitor(
 				now := time.Now()
 				if now.Sub(lastSampleAt) >= heapBudgetSampleInterval {
 					logHeapBudgetSample("periodic", maxHeapBytes, memory)
+					// Job 5.7: per-process goroutine / stack / RSS
+					// sample beside the heap sample, once per
+					// second, per process — so each cell produces
+					// its own series for reconciliation.
+					logRuntimeResourcesSample(sampleRuntimeResources())
 					lastSampleAt = now
 				}
 				if heapProfilePath != "" && !heapProfileWritten && memory.HeapAlloc >= heapProfileAtBytes {
@@ -1446,6 +1648,13 @@ func defaultSFUHeapBudgetForViewers(viewerCount int) uint64 {
 		return 0
 	}
 	const (
+		// Job 5.10: 500,000 B per viewer is measured, not guessed.
+		// The VM floor is ~44-47 KB per idle viewer (unnegotiated
+		// PeerConnection + subscription) plus ~4-7 KB with full
+		// 64-packet queues; the live cost (negotiated transport
+		// state) is unmeasured, so the estimate keeps ~10x headroom
+		// over the floor and the x2 multiplier is headroom on top.
+		// See docs/per-viewer-memory-budget.md.
 		estimatedHeapBytesPerViewer = 500_000
 		budgetMultiplier            = 2
 		minimumHeapBudgetBytes      = 256 << 20
@@ -1477,14 +1686,122 @@ func fail(format string, args ...any) {
 	os.Exit(1)
 }
 
+const publicModeList = "pair, sfu, sfu-single, sfu-cascade, turn-server, or mint-token"
+
+func validateMode(mode string, dev bool) error {
+	switch mode {
+	case "pair", "sfu", "sfu-single", "sfu-cascade", "turn-server", "mint-token":
+		return nil
+	case "m7h-sfu", "m1h", "m2h", "m3h", "m4h", "m5h", "m6h", "m7h", "m9h", "audio-rung1":
+		if dev {
+			return nil
+		}
+	}
+	return fmt.Errorf("unsupported --mode %q (want %s)", mode, publicModeList)
+}
+
+// h264FirstMBInSlice reads first_mb_in_slice, the first ue(v) value
+// of a coded-slice NAL's slice header (after the one-byte NAL
+// header). The first slice of a picture has first_mb_in_slice == 0;
+// continuation slices have a larger value. An unparseable header
+// reports true (start a new picture): treating unknown data as a
+// new picture matches the old per-slice behaviour instead of
+// silently merging two pictures.
+func h264FirstMBInSlice(nal []byte) bool {
+	if len(nal) < 2 {
+		return true
+	}
+	// Strip emulation-prevention bytes (00 00 03 -> 00 00) to get
+	// the RBSP the Exp-Golomb reader runs over.
+	rbsp := make([]byte, 0, len(nal)-1)
+	for i := 1; i < len(nal); i++ {
+		if i+2 < len(nal) && nal[i] == 0 && nal[i+1] == 0 && nal[i+2] == 3 {
+			rbsp = append(rbsp, 0, 0)
+			i += 2
+			continue
+		}
+		rbsp = append(rbsp, nal[i])
+	}
+	bitPos := 0
+	readBit := func() (int, bool) {
+		if bitPos/8 >= len(rbsp) {
+			return 0, false
+		}
+		bit := (rbsp[bitPos/8] >> (7 - bitPos%8)) & 1
+		bitPos++
+		return int(bit), true
+	}
+	leadingZeros := 0
+	for {
+		bit, ok := readBit()
+		if !ok {
+			return true
+		}
+		if bit == 1 {
+			break
+		}
+		leadingZeros++
+		if leadingZeros > 31 {
+			return true
+		}
+	}
+	// ue(v): the value is 2^leadingZeros - 1 + suffix, but only
+	// whether it is zero matters here: it is zero exactly when
+	// leadingZeros == 0 (the first bit was 1).
+	return leadingZeros == 0
+}
+
 func readH264Frames(source io.Reader) ([]media.Sample, error) {
+	return readH264NALs(source, videoFrameDuration)
+}
+
+// readH264NALs is the NAL loop behind readH264Frames: every emitted
+// frame carries frameDuration. The historical caller stamps
+// videoFrameDuration (60 ms); the frame-rate flag path (job 3.2)
+// passes the send interval for the declared fps instead.
+func readH264NALs(source io.Reader, frameDuration time.Duration) ([]media.Sample, error) {
 	reader, err := h264reader.NewReader(source)
 	if err != nil {
 		return nil, fmt.Errorf("create H.264 reader: %w", err)
 	}
 
+	// Job 2.9: one Sample per PICTURE, not per slice NAL. A
+	// multi-slice picture (one IDR or P picture split across
+	// several slice NALs) used to become one Sample per slice,
+	// overcounting frames. Slices of one picture are consecutive
+	// NALs; a new picture starts at a slice whose
+	// first_mb_in_slice is 0, at an access-unit delimiter, or at
+	// a parameter set.
 	var sps, pps []byte
 	var frames []media.Sample
+	var pending []byte
+	pendingIsIDR := false
+	pendingHasSlice := false
+	flush := func() error {
+		if !pendingHasSlice {
+			pending = pending[:0]
+			return nil
+		}
+		if pendingIsIDR {
+			if len(sps) == 0 || len(pps) == 0 {
+				return errors.New("H.264 source must provide SPS and PPS before an IDR")
+			}
+			frame := make([]byte, 0, len(sps)+len(pps)+len(pending)+12)
+			frame = appendAnnexBNAL(frame, sps)
+			frame = appendAnnexBNAL(frame, pps)
+			frame = append(frame, pending...)
+			frames = append(frames, media.Sample{Data: frame, Duration: frameDuration})
+		} else {
+			if len(frames) == 0 {
+				return errors.New("H.264 source contains a non-IDR slice before its first SPS/PPS-backed IDR")
+			}
+			frames = append(frames, media.Sample{Data: append([]byte(nil), pending...), Duration: frameDuration})
+		}
+		pending = pending[:0]
+		pendingHasSlice = false
+		pendingIsIDR = false
+		return nil
+	}
 	for {
 		nal, err := reader.NextNAL()
 		if errors.Is(err, io.EOF) {
@@ -1495,25 +1812,45 @@ func readH264Frames(source io.Reader) ([]media.Sample, error) {
 		}
 		switch nal.UnitType {
 		case h264reader.NalUnitTypeSPS:
+			if err := flush(); err != nil {
+				return nil, err
+			}
 			sps = append(sps[:0], nal.Data...)
 		case h264reader.NalUnitTypePPS:
+			if err := flush(); err != nil {
+				return nil, err
+			}
 			pps = append(pps[:0], nal.Data...)
-		case h264reader.NalUnitTypeCodedSliceIdr:
-			if len(sps) == 0 || len(pps) == 0 {
-				return nil, errors.New("H.264 source must provide SPS and PPS before an IDR")
+		case h264reader.NalUnitTypeAUD:
+			if err := flush(); err != nil {
+				return nil, err
 			}
-			frame := make([]byte, 0, len(sps)+len(pps)+len(nal.Data)+12)
-			frame = appendAnnexBNAL(frame, sps)
-			frame = appendAnnexBNAL(frame, pps)
-			frame = appendAnnexBNAL(frame, nal.Data)
-			frames = append(frames, media.Sample{Data: frame, Duration: videoFrameDuration})
-		case h264reader.NalUnitTypeCodedSliceNonIdr:
-			if len(frames) == 0 {
-				return nil, errors.New("H.264 source contains a non-IDR slice before its first SPS/PPS-backed IDR")
+		case h264reader.NalUnitTypeCodedSliceIdr,
+			h264reader.NalUnitTypeCodedSliceNonIdr,
+			h264reader.NalUnitTypeCodedSliceDataPartitionA:
+			isIDR := nal.UnitType == h264reader.NalUnitTypeCodedSliceIdr
+			if pendingHasSlice && h264FirstMBInSlice(nal.Data) {
+				if err := flush(); err != nil {
+					return nil, err
+				}
 			}
-			frame := appendAnnexBNAL(nil, nal.Data)
-			frames = append(frames, media.Sample{Data: frame, Duration: videoFrameDuration})
+			if !pendingHasSlice {
+				pendingIsIDR = isIDR
+			}
+			pending = appendAnnexBNAL(pending, nal.Data)
+			pendingHasSlice = true
+		case h264reader.NalUnitTypeCodedSliceDataPartitionB,
+			h264reader.NalUnitTypeCodedSliceDataPartitionC:
+			// Data partitions B/C never start a picture; they
+			// belong to the pending picture's slice.
+			if !pendingHasSlice {
+				return nil, errors.New("H.264 source contains a slice data partition before any slice")
+			}
+			pending = appendAnnexBNAL(pending, nal.Data)
 		}
+	}
+	if err := flush(); err != nil {
+		return nil, err
 	}
 	if len(frames) == 0 {
 		return nil, errors.New("H.264 source contains no SPS/PPS-backed IDR frames")
@@ -1987,7 +2324,7 @@ func loopbackSettings(withUDPMux bool, readBufferSize int) (webrtc.SettingEngine
 }
 
 // M7-H attempt 6: endpoint-attribution trace (measurement-only, no behaviour
-// change). ChatGPT's decisive measurement for the attempt-5 no-socket
+// change). A decisive measurement for the attempt-5 no-socket
 // explosion: which process writes the ~29M datagrams that die as kernel
 // "no socket" drops, to which destination ports, and what was those
 // destinations' socket lifecycle when the datagrams arrived?
@@ -2126,6 +2463,20 @@ func pcLifetimeFor(kind, id string) *pcLifetime {
 	lt.lastConnState.Store("")
 	v, _ := pcLifetimes.LoadOrStore(key, lt)
 	return v.(*pcLifetime)
+}
+
+// pcLifetimeDelete removes one pcLifetimes entry (job 2.3). Entries
+// are created per PeerConnection and must not outlive it.
+func pcLifetimeDelete(kind, id string) {
+	pcLifetimes.Delete(kind + ":" + id)
+}
+
+// deletePCLifetimesForID removes every pcLifetimes entry for one
+// participant id, across all PC kinds (job 2.3).
+func deletePCLifetimesForID(id string) {
+	for _, kind := range []string{"viewer-client", "publisher-client", "router-serverPeer", "router-publisherPeer"} {
+		pcLifetimeDelete(kind, id)
+	}
 }
 
 // pcLifetimeHistogram aggregates the per-PC lifetimes into the three
@@ -3405,6 +3756,9 @@ func (stats *m7hPublisherSendStats) record(scheduledAt, sentAt time.Time) {
 	}
 	stats.frames.Add(1)
 	stats.lastSendUnixNanos.Store(sentAt.UnixNano())
+	// Job 5.8: the first recorded send is the publisher start for
+	// CPU-profile metadata (first call wins; later sends are no-ops).
+	markCPUProfilePublisherStart(sentAt)
 }
 
 type m7hMetricHistogram struct {
@@ -4771,15 +5125,21 @@ func runLocalAudioRung(
 		return audioRungResult{}, err
 	}
 
-	swapUsed, swapFree, err := readAudioSwapMiB()
+	swapUsed, swapFree, err := readSwapMiBChecked()
 	if err != nil {
 		return audioRungResult{}, err
 	}
-	if duration >= MinDuration && speakerCount == 10 && listenerCount == 100 && swapFree < 2048 {
-		return audioRungResult{}, fmt.Errorf(
-			"10x100 audio rung blocked by host safety floor: swap free %.2f MiB, need at least 2048 MiB",
-			swapFree,
-		)
+	if duration >= MinDuration && speakerCount == 10 && listenerCount == 100 {
+		hostSnapshot, snapshotErr := readSFUHostSnapshot()
+		if snapshotErr != nil {
+			return audioRungResult{}, fmt.Errorf("read host safety snapshot for 10x100 audio rung: %w", snapshotErr)
+		}
+		if failures := sfuHostMemoryFailures(hostSnapshot, false); len(failures) > 0 {
+			return audioRungResult{}, fmt.Errorf(
+				"10x100 audio rung blocked by host memory safety check: %v",
+				failures,
+			)
+		}
 	}
 	events, err := audioHandRaiseSmoke(
 		roomID,
@@ -5016,7 +5376,7 @@ func runLocalAudioRung(
 			if time.Now().After(nextProgress) {
 				var memory runtime.MemStats
 				runtime.ReadMemStats(&memory)
-				progressSwapUsed, progressSwapFree, swapErr := readAudioSwapMiB()
+				progressSwapUsed, progressSwapFree, swapErr := readSwapMiBChecked()
 				if swapErr != nil {
 					return audioRungResult{}, swapErr
 				}
@@ -5055,7 +5415,7 @@ measurementDone:
 asyncErrorsChecked:
 	heapStart, heapPeak, heapEnd := heapSampler.stop()
 	completedAt := time.Now()
-	swapUsedEnd, swapFreeEnd, err := readAudioSwapMiB()
+	swapUsedEnd, swapFreeEnd, err := readSwapMiBChecked()
 	if err != nil {
 		return audioRungResult{}, err
 	}
@@ -5152,26 +5512,36 @@ func sendMedia(
 	audioTrack, videoTrack *webrtc.TrackLocalStaticSample,
 	videoFrames []media.Sample,
 ) (sendCounts, error) {
-	ticker := time.NewTicker(audioFrameDuration)
-	defer ticker.Stop()
+	audioTicker := time.NewTicker(audioFrameDuration)
+	defer audioTicker.Stop()
+	// Job 3.2: video runs on its own ticker at the frames' stamped
+	// rate (1/fps), not every third audio tick: at 5 fps the frames
+	// go out every 200 ms, at 30 fps every 33.33 ms. The historical
+	// 60 ms cadence is the special case where the frames carry a
+	// 60 ms Duration.
+	videoInterval := videoFrameDuration
+	if len(videoFrames) > 0 && videoFrames[0].Duration > 0 {
+		videoInterval = videoFrames[0].Duration
+	}
+	videoTicker := time.NewTicker(videoInterval)
+	defer videoTicker.Stop()
 	var counts sendCounts
 	for {
 		select {
 		case <-ctx.Done():
 			return counts, nil
-		case <-ticker.C:
+		case <-audioTicker.C:
 			audioData := pcmuToneFrame(int(counts.audioSamples))
 			if err := audioTrack.WriteSample(media.Sample{Data: audioData, Duration: audioFrameDuration}); err != nil {
 				return counts, fmt.Errorf("write PCMU sample: %w", err)
 			}
 			counts.audioSamples++
-			if counts.audioSamples%3 == 0 {
-				frame := videoFrames[(counts.videoFrames)%uint64(len(videoFrames))]
-				if err := videoTrack.WriteSample(frame); err != nil {
-					return counts, fmt.Errorf("write H.264 frame: %w", err)
-				}
-				counts.videoFrames++
+		case <-videoTicker.C:
+			frame := videoFrames[(counts.videoFrames)%uint64(len(videoFrames))]
+			if err := videoTrack.WriteSample(frame); err != nil {
+				return counts, fmt.Errorf("write H.264 frame: %w", err)
 			}
+			counts.videoFrames++
 		}
 	}
 }
@@ -5267,13 +5637,27 @@ type sfuPublishedTrack struct {
 	// never blocks on the queue.
 	upstreamQueue      chan upstreamFeedback
 	upstreamWriterOnce sync.Once
-	rtpPacketsRead     atomic.Uint64
+	// upstreamMu guards upstreamClosed and serialises closing the
+	// queue against enqueueUpstreamFeedback's send (job 2.2): a
+	// send racing a close would panic on a closed channel. The
+	// writer's fallback direct write happens outside this lock.
+	upstreamMu     sync.RWMutex
+	upstreamClosed bool
+	rtpPacketsRead atomic.Uint64
 
-	packetMu                sync.Mutex
-	packetCache             map[uint16]*rtp.Packet
-	packetOrder             [sfuNACKHistoryPackets]uint16
-	packetStart             int
-	packetCount             int
+	packetMu    sync.Mutex
+	packetCache map[uint16]*rtp.Packet
+	packetOrder [sfuNACKHistoryPackets]uint16
+	packetStart int
+	packetCount int
+	// Job 4.3: packetReceivedAt records when each cached packet was
+	// received, for the time-based cache horizon: rememberPacket
+	// evicts packets older than sfuRetransmitWindow (the ring stays
+	// as a hard cap). packetClock is the clock for receipt times —
+	// nil means time.Now; tests inject a fake clock to control time
+	// exactly. Both are guarded by packetMu.
+	packetReceivedAt        map[uint16]time.Time
+	packetClock             func() time.Time
 	lastSequence            uint16
 	packetCachePackets      atomic.Int64
 	packetCachePayloadBytes atomic.Int64
@@ -5281,7 +5665,7 @@ type sfuPublishedTrack struct {
 	// track last forwarded a NACK for it upstream (LADDER FIX 2).
 	// Guarded by packetMu; shared by all subscriptions of the track
 	// so 375 viewers NACKing the same upstream-lost packet forward it
-	// once per nackAggregationWindow, not 375 times. Without this,
+	// once per sfuRetransmitWindow, not 375 times. Without this,
 	// the publisher retransmits once per forwarded NACK and each
 	// retransmit fans out to all 375 viewers — the 20x7500 run 2
 	// storm (26,281 upstream forwards, 147,485 router retransmits,
@@ -5301,11 +5685,33 @@ type sfuSubscription struct {
 	key         sfuTrackKey
 	source      *sfuPublishedTrack
 	egressShard *sfuEgressShard
-	router      *sfuRouter
-	h264Video   bool
-	viewerPeer  *webrtc.PeerConnection
-	downTrack   *webrtc.TrackLocalStaticRTP
-	sender      *webrtc.RTPSender
+	// Job 4.6: deterministic fault injection for this viewer. When
+	// set, writeRTP drops selected packets before the downtrack, so
+	// a test can lose a packet (or a frame) and watch the NACK /
+	// retransmit / keyframe path repair it. Nil means no injection.
+	faultInjector *faultInjector
+	// Job 4.5: this subscription's NACK feedback-age profile, copied
+	// from the router default at subscribe(). Zero value is broadcast.
+	nackProfile sfuNACKProfile
+	// Job 4.7: slow-viewer policy state. maxLayer stores the highest
+	// layer still forwarded, PLUS ONE: 0 means unset (all layers —
+	// the default for test-built subscriptions), 1 = layerBase only,
+	// 2 = layerKey, 3 = layerDelta. queueFullStrikes counts
+	// consecutive queue-full drops; a successful enqueue resets it.
+	// layerStepDowns / layerFiltered / slowViewerDrops count the
+	// policy's steps. All atomics: forwardTrack (direct path) and
+	// shard.run (shard path) are the writers, one goroutine per
+	// subscription at a time.
+	maxLayer         atomic.Int32
+	queueFullStrikes atomic.Uint64
+	layerStepDowns   atomic.Uint64
+	layerFiltered    atomic.Uint64
+	slowViewerDrops  atomic.Uint64
+	router           *sfuRouter
+	h264Video        bool
+	viewerPeer       *webrtc.PeerConnection
+	downTrack        *webrtc.TrackLocalStaticRTP
+	sender           *webrtc.RTPSender
 
 	mu                        sync.RWMutex
 	active                    bool
@@ -5331,10 +5737,19 @@ type sfuSubscription struct {
 }
 
 type sfuRouter struct {
-	mu                             sync.RWMutex
-	publishers                     map[string]*webrtc.PeerConnection
-	tracks                         map[sfuTrackKey]*sfuPublishedTrack
-	viewers                        map[string]*sfuViewer
+	mu         sync.RWMutex
+	publishers map[string]*webrtc.PeerConnection
+	tracks     map[sfuTrackKey]*sfuPublishedTrack
+	viewers    map[string]*sfuViewer
+	// Job 4.6: per-viewer fault injectors, keyed by viewer ID.
+	// subscribe() attaches the injector for a viewer when it
+	// subscribes; SetFaultInjector installs one. Nil map entries
+	// and absent viewers mean no injection.
+	faultInjectors map[string]*faultInjector
+	// Job 4.5: the router's NACK feedback-age profile (from
+	// HAMI_SFU_NACK_PROFILE, default broadcast). subscribe() copies
+	// it onto each subscription.
+	nackProfile                    sfuNACKProfile
 	egressShardCount               int
 	feedbackSenderSSRC             uint32
 	closed                         bool
@@ -5562,6 +5977,15 @@ func (shard *sfuEgressShard) run() {
 				cachedVersion = version
 			}
 			for _, subscription := range subscriptions {
+				// Job 4.7: the layer filter applies on the shard
+				// path too — a stepped-down viewer does not receive
+				// packets above its current max layer. (The shard
+				// queue is shared, so per-subscription queue-full
+				// strikes are a direct-path signal only; see the
+				// 4.7 evidence note.)
+				if subscription.filterLayer(job.layer) {
+					continue
+				}
 				shard.router.forwardQueuedRTP(subscription, queuedRTP{
 					packet:     job.packet,
 					enqueuedAt: job.enqueuedAt,
@@ -5573,7 +5997,7 @@ func (shard *sfuEgressShard) run() {
 			releaseRTPPacketCopy(job.packet)
 		case job := <-shard.nackQueue:
 			shard.router.releaseNACKBudget()
-			if time.Since(job.enqueuedAt) > nackFeedbackMaxQueueAge {
+			if time.Since(job.enqueuedAt) > job.subscription.nackFeedbackMaxAge() {
 				job.subscription.recordNACKDroppedStale()
 				continue
 			}
@@ -5621,6 +6045,13 @@ type sfuProofConfig struct {
 	logRTPPath       bool
 	frameDiagnostics *sfuFrameDiagnosticRecorder
 	remoteSFU        *m7hRemoteSFUClient
+	// Job 4.6: deterministic fault injection for the proof, keyed by
+	// viewer ID ("hami-sfu-viewer-%d"). Installed on the router before
+	// viewers subscribe; a viewer's injector drops selected packets
+	// at writeRTP so the proof can exercise NACK retransmission and
+	// keyframe recovery under loss. Nil (the default) means no
+	// injection — existing proofs are unaffected.
+	faultInjection map[string]*faultInjector
 }
 
 type sfuSendResult struct {
@@ -5661,6 +6092,7 @@ type sfuViewerCapture struct {
 	tracks           map[string]*streamCounter
 	sequenceCounts   map[string]map[uint16]uint64
 	duplicates       map[string]uint64
+	recovered        map[string]uint64
 	terminalErr      error
 	viewerID         string
 	latencyClock     *FrameClock
@@ -5809,6 +6241,15 @@ type videoFrameAssembler struct {
 	lateSequences     map[uint16]struct{}
 	lateTimestamps    map[uint16]uint32
 	lateMarkers       map[uint16]struct{}
+	// Job 3.5: completedMarkers remembers the marker of every frame
+	// that completed while a late span existed — through the active
+	// path or the late path — so a later single-packet rescue can
+	// prove its frame starts at the marker (see
+	// lateMarkerFrameStart). It shares the span's lifecycle
+	// (cleared with it in clearLateSpan), so it stays bounded by
+	// the span; a boundary fact is only ever needed for a frame in
+	// the span.
+	completedMarkers map[uint16]struct{}
 	// completedQueue holds frame IDs completed by an earlier packet
 	// (a late retransmit can complete several span frames at once);
 	// push reports them one per call.
@@ -5843,6 +6284,36 @@ type peerNegotiationPair struct {
 	answererSocketConn *packetReadCountingConn
 }
 
+// sfuNACKProfile is a NACK feedback-age preset (Job 4.5). The zero
+// value is broadcast.
+type sfuNACKProfile string
+
+// feedbackMaxAge is how long a queued NACK may wait before it is
+// stale and dropped instead of retransmitted.
+func (p sfuNACKProfile) feedbackMaxAge() time.Duration {
+	switch p {
+	case nackProfileInteractive:
+		return 100 * time.Millisecond
+	case nackProfileRecording:
+		return 2000 * time.Millisecond
+	default:
+		return 500 * time.Millisecond
+	}
+}
+
+// parseNACKProfile parses HAMI_SFU_NACK_PROFILE; empty means the
+// broadcast default.
+func parseNACKProfile(value string) (sfuNACKProfile, error) {
+	switch sfuNACKProfile(value) {
+	case "", nackProfileBroadcast:
+		return nackProfileBroadcast, nil
+	case nackProfileInteractive, nackProfileRecording:
+		return sfuNACKProfile(value), nil
+	default:
+		return "", fmt.Errorf("HAMI_SFU_NACK_PROFILE must be interactive, broadcast or recording, got %q", value)
+	}
+}
+
 func newSFURouter(api *webrtc.API) (*sfuRouter, error) {
 	if api == nil {
 		return nil, errors.New("Pion API is required")
@@ -5866,16 +6337,97 @@ func newSFURouter(api *webrtc.API) (*sfuRouter, error) {
 		}
 		egressShardCount = parsed
 	}
+	nackProfile, err := parseNACKProfile(os.Getenv("HAMI_SFU_NACK_PROFILE"))
+	if err != nil {
+		return nil, err
+	}
 	router := &sfuRouter{
 		publishers:                     make(map[string]*webrtc.PeerConnection),
 		tracks:                         make(map[sfuTrackKey]*sfuPublishedTrack),
 		viewers:                        make(map[string]*sfuViewer),
+		faultInjectors:                 make(map[string]*faultInjector),
+		nackProfile:                    nackProfile,
 		egressShardCount:               egressShardCount,
 		feedbackSenderSSRC:             senderSSRC,
 		lastKeyframeRequestByPublisher: make(map[string]time.Time),
 	}
 	fmt.Fprintf(os.Stderr, "hami SFU egress shards: count=%d\n", egressShardCount)
 	return router, nil
+}
+
+// trackKeysForPublisher returns the track keys the router stored at
+// registration for one publisher (job 2.4). Cleanup uses these stored
+// keys; it must never rebuild a track ID from the publisher name.
+func (r *sfuRouter) trackKeysForPublisher(publisherID string) []sfuTrackKey {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	var keys []sfuTrackKey
+	for key := range r.tracks {
+		if key.PublisherID == publisherID {
+			keys = append(keys, key)
+		}
+	}
+	sort.Slice(keys, func(i, j int) bool {
+		if keys[i].TrackID != keys[j].TrackID {
+			return keys[i].TrackID < keys[j].TrackID
+		}
+		return keys[i].Layer < keys[j].Layer
+	})
+	return keys
+}
+
+// resolveTrackKeyLocked resolves a lookup key to the stored key it
+// names (job 2.6). Callers must hold at least r.mu.RLock. A key that
+// names a layer matches exactly. A key with no layer matches when
+// exactly one layer is stored for that publisher+track; with two or
+// more layers the lookup is ambiguous and fails instead of picking
+// a layer at random. Unknown tracks fail instead of matching nothing.
+func (r *sfuRouter) resolveTrackKeyLocked(key sfuTrackKey) (sfuTrackKey, error) {
+	if _, ok := r.tracks[key]; ok {
+		return key, nil
+	}
+	if key.Layer != "" {
+		return sfuTrackKey{}, fmt.Errorf("publisher track %q layer %q is not registered", key.TrackID, key.Layer)
+	}
+	var match sfuTrackKey
+	matches := 0
+	for stored := range r.tracks {
+		if stored.PublisherID == key.PublisherID && stored.TrackID == key.TrackID {
+			match = stored
+			matches++
+		}
+	}
+	switch matches {
+	case 0:
+		return sfuTrackKey{}, fmt.Errorf("publisher track %q is not registered", key.TrackID)
+	case 1:
+		return match, nil
+	default:
+		return sfuTrackKey{}, fmt.Errorf("publisher track %q has %d layers; a layer is required", key.TrackID, matches)
+	}
+}
+
+// resolveTrackKey is resolveTrackKeyLocked with the read lock taken.
+func (r *sfuRouter) resolveTrackKey(key sfuTrackKey) (sfuTrackKey, error) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.resolveTrackKeyLocked(key)
+}
+
+// SetFaultInjector installs a deterministic fault injector for one
+// viewer (Job 4.6). subscribe() attaches it when the viewer
+// subscribes; a nil injector removes the viewer's injection.
+func (r *sfuRouter) SetFaultInjector(viewerID string, injector *faultInjector) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.faultInjectors == nil {
+		r.faultInjectors = make(map[string]*faultInjector)
+	}
+	if injector == nil {
+		delete(r.faultInjectors, viewerID)
+		return
+	}
+	r.faultInjectors[viewerID] = injector
 }
 
 func (r *sfuRouter) registerPublisher(
@@ -5918,7 +6470,10 @@ func (r *sfuRouter) registerTrack(publisherID string, remote *webrtc.TrackRemote
 	if remote == nil {
 		return errors.New("publisher track is required")
 	}
-	key := sfuTrackKey{PublisherID: publisherID, TrackID: remote.ID()}
+	// Job 2.6: the layer is the remote track's RID. Simulcast layers
+	// share one track ID and differ only by RID, so the key must
+	// carry it or the second layer collides with the first.
+	key := sfuTrackKey{PublisherID: publisherID, TrackID: remote.ID(), Layer: remote.RID()}
 	if key.TrackID == "" {
 		return errors.New("publisher track ID is required")
 	}
@@ -5933,19 +6488,6 @@ func (r *sfuRouter) registerTrack(publisherID string, remote *webrtc.TrackRemote
 		firstFrameReady: make(chan struct{}),
 		upstreamQueue:   make(chan upstreamFeedback, 1024),
 		packetCache:     make(map[uint16]*rtp.Packet, sfuNACKHistoryPackets),
-	}
-	track.egressShards = make([]*sfuEgressShard, r.egressShardCount)
-	for index := range track.egressShards {
-		shard := &sfuEgressShard{
-			subscriptions: make(map[string]*sfuSubscription),
-			queue:         make(chan sfuEgressJob, sfuEgressShardQueueSize),
-			nackQueue:     make(chan sfuEgressNACKJob, nackQueueSize*32),
-			router:        r,
-			source:        track,
-			closed:        make(chan struct{}),
-		}
-		track.egressShards[index] = shard
-		go shard.run()
 	}
 	r.mu.Lock()
 	if r.closed {
@@ -5964,7 +6506,42 @@ func (r *sfuRouter) registerTrack(publisherID string, remote *webrtc.TrackRemote
 	r.tracks[key] = track
 	r.mu.Unlock()
 
+	// Job 2.10: egress shards start only AFTER the track is stored.
+	// They used to start before the closed / publisher / duplicate
+	// checks above, so every failed registration leaked one run
+	// goroutine per shard with nothing ever stopping it.
+	track.egressShards = make([]*sfuEgressShard, r.egressShardCount)
+	for index := range track.egressShards {
+		shard := &sfuEgressShard{
+			subscriptions: make(map[string]*sfuSubscription),
+			queue:         make(chan sfuEgressJob, sfuEgressShardQueueSize),
+			nackQueue:     make(chan sfuEgressNACKJob, nackQueueSize*32),
+			router:        r,
+			source:        track,
+			closed:        make(chan struct{}),
+		}
+		track.egressShards[index] = shard
+		go shard.run()
+	}
+
 	go r.forwardTrack(track)
+	return nil
+}
+
+// unregisterPublisher removes a publisher and closes its
+// PeerConnection (job 2.5: the discard path for a failed HTTP
+// registration). Idempotent: an unknown publisher is not an error.
+func (r *sfuRouter) unregisterPublisher(publisherID string) error {
+	r.mu.Lock()
+	peer := r.publishers[publisherID]
+	delete(r.publishers, publisherID)
+	r.mu.Unlock()
+	if peer == nil {
+		return nil
+	}
+	if err := peer.Close(); err != nil {
+		return fmt.Errorf("close publisher %s PeerConnection: %w", publisherID, err)
+	}
 	return nil
 }
 
@@ -6002,10 +6579,13 @@ func (r *sfuRouter) authorizeSubscription(viewerID string, key sfuTrackKey) erro
 	if !exists {
 		return fmt.Errorf("viewer %q is not registered", viewerID)
 	}
-	if _, exists := r.tracks[key]; !exists {
-		return fmt.Errorf("publisher track %q is not registered", key.TrackID)
+	// Job 2.6: resolve a layer-less key to the stored layer key, so
+	// the authorization is recorded under the key subscribe() looks up.
+	resolved, err := r.resolveTrackKeyLocked(key)
+	if err != nil {
+		return err
 	}
-	viewer.allowed[key] = struct{}{}
+	viewer.allowed[resolved] = struct{}{}
 	return nil
 }
 
@@ -6020,15 +6600,19 @@ func (r *sfuRouter) subscribe(viewerID string, key sfuTrackKey) error {
 		r.mu.Unlock()
 		return fmt.Errorf("viewer %q is not registered", viewerID)
 	}
+	// Job 2.6: resolve first, so the authorization check and the
+	// subscription both use the stored layer key.
+	resolved, err := r.resolveTrackKeyLocked(key)
+	if err != nil {
+		r.mu.Unlock()
+		return err
+	}
+	key = resolved
 	if _, allowed := viewer.allowed[key]; !allowed {
 		r.mu.Unlock()
 		return fmt.Errorf("%w: viewer=%s track=%s", errSFUUnauthorized, viewerID, key.TrackID)
 	}
-	source, trackExists := r.tracks[key]
-	if !trackExists {
-		r.mu.Unlock()
-		return fmt.Errorf("publisher track %q is not registered", key.TrackID)
-	}
+	source := r.tracks[key]
 	if _, exists := viewer.subscriptions[key]; exists {
 		r.mu.Unlock()
 		return fmt.Errorf("viewer %q already subscribes to track %q", viewerID, key.TrackID)
@@ -6066,6 +6650,13 @@ func (r *sfuRouter) subscribe(viewerID string, key sfuTrackKey) error {
 		subscription.egressShard = source.egressShards[shardIndex]
 		subscription.egressShard.add(subscription)
 	}
+	// Job 4.6: attach this viewer's fault injector, if one was
+	// installed with SetFaultInjector (or via sfuProofConfig).
+	subscription.faultInjector = r.faultInjectors[viewerID]
+	// Job 4.5: the subscription inherits the router's NACK profile.
+	subscription.nackProfile = r.nackProfile
+	// Job 4.7: a new viewer starts at the top layer.
+	subscription.setMaxLayer(layerDelta)
 	viewer.subscriptions[key] = subscription
 	source.subscribers[viewerID] = subscription
 	source.subscribersVersion.Add(1)
@@ -6084,6 +6675,10 @@ func (r *sfuRouter) unsubscribe(viewerID string, key sfuTrackKey) error {
 	if viewer == nil {
 		r.mu.Unlock()
 		return fmt.Errorf("viewer %q is not registered", viewerID)
+	}
+	// Job 2.6: resolve a layer-less key to the stored layer key.
+	if resolved, err := r.resolveTrackKeyLocked(key); err == nil {
+		key = resolved
 	}
 	subscription := viewer.subscriptions[key]
 	if subscription == nil {
@@ -6113,6 +6708,12 @@ func (r *sfuRouter) unregisterTrack(key sfuTrackKey) error {
 
 func (r *sfuRouter) unregisterTrackIfCurrent(key sfuTrackKey, expected *sfuPublishedTrack) error {
 	r.mu.Lock()
+	// Job 2.6: resolve a layer-less key to the stored layer key.
+	// An unknown key is not an error here (unregister is
+	// idempotent), so a failed resolve keeps the old behaviour.
+	if resolved, err := r.resolveTrackKeyLocked(key); err == nil {
+		key = resolved
+	}
 	source := r.tracks[key]
 	if source == nil || (expected != nil && source != expected) {
 		r.mu.Unlock()
@@ -6135,10 +6736,17 @@ func (r *sfuRouter) unregisterTrackIfCurrent(key sfuTrackKey, expected *sfuPubli
 	for _, shard := range source.egressShards {
 		shard.stop()
 	}
+	// Job 2.2: closing the upstream queue lets the per-track writer
+	// goroutine exit; without this it blocked on the queue forever.
+	source.closeUpstreamQueue()
 
 	var errs []error
-	if err := source.remote.SetReadDeadline(time.Now()); err != nil {
-		errs = append(errs, fmt.Errorf("stop publisher track %s reader: %w", key.TrackID, err))
+	// A track whose remote is already gone (nil) still unregisters;
+	// stopping its reader is skipped instead of panicking.
+	if source.remote != nil {
+		if err := source.remote.SetReadDeadline(time.Now()); err != nil {
+			errs = append(errs, fmt.Errorf("stop publisher track %s reader: %w", key.TrackID, err))
+		}
 	}
 	for _, subscription := range subscriptions {
 		subscription.stop()
@@ -6171,6 +6779,8 @@ func (r *sfuRouter) removeViewer(viewerID string) error {
 	for _, subscription := range subscriptions {
 		subscription.stop()
 	}
+	// Job 2.3: the viewer's lifetime entries die with its PC.
+	deletePCLifetimesForID(viewerID)
 	if err := viewer.peer.Close(); err != nil {
 		return fmt.Errorf("close viewer %s PeerConnection: %w", viewerID, err)
 	}
@@ -6196,13 +6806,34 @@ func (r *sfuRouter) close() error {
 			subscriptions = append(subscriptions, subscription)
 		}
 	}
+	// Snapshot the tracks before clearing the map: teardown must
+	// stop their shard goroutines and close their upstream queues
+	// (job 2.2), which close() previously skipped entirely.
+	tracks := make([]*sfuPublishedTrack, 0, len(r.tracks))
+	for _, track := range r.tracks {
+		tracks = append(tracks, track)
+	}
 	r.viewers = make(map[string]*sfuViewer)
 	r.publishers = make(map[string]*webrtc.PeerConnection)
 	r.tracks = make(map[sfuTrackKey]*sfuPublishedTrack)
 	r.mu.Unlock()
 
+	for _, track := range tracks {
+		for _, shard := range track.egressShards {
+			shard.stop()
+		}
+		track.closeUpstreamQueue()
+	}
 	for _, subscription := range subscriptions {
 		subscription.stop()
+	}
+	// Job 2.3: every participant's lifetime entries die with the
+	// router, so the map is empty after teardown.
+	for publisherID := range publishers {
+		deletePCLifetimesForID(publisherID)
+	}
+	for _, viewer := range viewers {
+		deletePCLifetimesForID(viewer.id)
 	}
 	var errs []error
 	for _, viewer := range viewers {
@@ -6384,6 +7015,7 @@ func newM7HRemoteSFUCommand(ctx context.Context, executable string, maxHeapBytes
 	command := exec.CommandContext(
 		ctx,
 		executable,
+		"-dev",
 		"-mode=m7h-sfu",
 		"-max-heap-bytes="+strconv.FormatUint(maxHeapBytes, 10),
 	)
@@ -6739,6 +7371,107 @@ func writeM7HGoroutineProfile(path string) error {
 	return nil
 }
 
+// profilePathForPID returns a per-process profile path (Job 5.7,
+// landed from the verified per-pid patch, sha e0e9bda9…): the parent
+// and each cell run startHeapBudgetMonitor and inherit the same
+// HAMI_*_PROFILE_PATH env value, so without the pid suffix all five
+// processes truncate + write the same file at the same 90 s delay
+// and the CPU profiles come out as interleaved, unparseable gzip
+// (4/5 unreadable in the T0-T4 trials, 24 Nov 2026). The pid goes
+// before the .pprof extension so the post-processor's *.pprof glob
+// and go tool pprof keep working.
+func profilePathForPID(path string) string {
+	if path == "" {
+		return path
+	}
+	if strings.HasSuffix(path, ".pprof") {
+		return strings.TrimSuffix(path, ".pprof") + "." + strconv.Itoa(os.Getpid()) + ".pprof"
+	}
+	return path + "." + strconv.Itoa(os.Getpid())
+}
+
+// mutexProfileMetadata is the companion JSON written beside a mutex
+// profile (Job 5.1): the window it covers and how many contention
+// samples it holds.
+type mutexProfileMetadata struct {
+	Path        string        `json:"profile_path"`
+	Window      time.Duration `json:"window_ns"`
+	StartedAt   time.Time     `json:"started_at_utc"`
+	SampleCount int           `json:"sample_count"`
+}
+
+// writeMutexProfile captures a mutex (lock-contention) profile for
+// window and writes it to path, plus a companion JSON at path+".json"
+// with the window and sample count. Mutex profiling is enabled for
+// the window only (the previous fraction is restored after); samples
+// recorded while the fraction was 1 before this call are not
+// separated out, so callers must not enable mutex profiling
+// elsewhere during the window.
+func writeMutexProfile(ctx context.Context, path string, window time.Duration) (mutexProfileMetadata, error) {
+	metadata := mutexProfileMetadata{Path: path, Window: window}
+	if window <= 0 || window > 10*time.Second {
+		return metadata, fmt.Errorf("mutex profile window %s is outside (0, %s]", window, 10*time.Second)
+	}
+	previous := runtime.SetMutexProfileFraction(1)
+	defer runtime.SetMutexProfileFraction(previous)
+	metadata.StartedAt = time.Now()
+	timer := time.NewTimer(window)
+	defer timer.Stop()
+	select {
+	case <-timer.C:
+	case <-ctx.Done():
+		return metadata, fmt.Errorf("mutex profile %s ended early: %w", path, ctx.Err())
+	}
+	profile := pprof.Lookup("mutex")
+	if profile == nil {
+		return metadata, errors.New("Go mutex profile is unavailable")
+	}
+	file, err := os.OpenFile(path, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600)
+	if err != nil {
+		return metadata, fmt.Errorf("create mutex profile %s: %w", path, err)
+	}
+	writeErr := profile.WriteTo(file, 0)
+	metadata.SampleCount = profile.Count()
+	closeErr := file.Close()
+	if writeErr != nil {
+		return metadata, errors.Join(fmt.Errorf("write mutex profile %s: %w", path, writeErr), closeErr)
+	}
+	if closeErr != nil {
+		return metadata, fmt.Errorf("close mutex profile %s: %w", path, closeErr)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		return metadata, fmt.Errorf("stat mutex profile %s: %w", path, err)
+	}
+	if info.Size() == 0 {
+		return metadata, fmt.Errorf("mutex profile %s is empty", path)
+	}
+	encoded, err := json.Marshal(metadata)
+	if err != nil {
+		return metadata, fmt.Errorf("encode mutex profile metadata %s: %w", path, err)
+	}
+	if err := os.WriteFile(path+".json", encoded, 0o600); err != nil {
+		return metadata, fmt.Errorf("write mutex profile metadata %s: %w", path+".json", err)
+	}
+	return metadata, nil
+}
+
+// cpuProfilePublisherStartNanos is the first publisher frame's send
+// time (Unix nanos, 0 = unknown), set once by
+// m7hPublisherSendStats.record — the same "first send sample" the
+// stall evidence defines as publisher start. cpuProfileSendDuration
+// is the run's media duration (nanos, 0 = unknown), set by main()
+// from -duration. writeCPUProfileMetadata reads both to decide
+// whether a CPU profile landed inside the media window.
+var cpuProfilePublisherStartNanos atomic.Int64
+var cpuProfileSendDurationNanos atomic.Int64
+
+// markCPUProfilePublisherStart records the first publisher send time
+// (first call wins).
+func markCPUProfilePublisherStart(sentAt time.Time) {
+	cpuProfilePublisherStartNanos.CompareAndSwap(0, sentAt.UnixNano())
+}
+
 func writeM7HCPUProfile(ctx context.Context, path string, duration time.Duration) error {
 	if duration <= 0 || duration > m7hCPUProfileMaxWindow {
 		return fmt.Errorf("M7-H CPU profile duration %s is outside (0, %s]", duration, m7hCPUProfileMaxWindow)
@@ -6750,6 +7483,7 @@ func writeM7HCPUProfile(ctx context.Context, path string, duration time.Duration
 	if err := file.Chmod(0o600); err != nil {
 		return errors.Join(fmt.Errorf("restrict M7-H CPU profile %s: %w", path, err), file.Close())
 	}
+	profileStart := time.Now()
 	if err := pprof.StartCPUProfile(file); err != nil {
 		return errors.Join(fmt.Errorf("start M7-H CPU profile %s: %w", path, err), file.Close())
 	}
@@ -6774,7 +7508,84 @@ func writeM7HCPUProfile(ctx context.Context, path string, duration time.Duration
 	if info.Size() == 0 {
 		return fmt.Errorf("M7-H CPU profile %s is empty", path)
 	}
+	// Job 5.8: companion metadata beside the profile. A metadata
+	// failure is logged, not fatal — the profile is the primary
+	// artifact and it already landed.
+	if _, err := writeCPUProfileMetadata(path, profileStart, duration); err != nil {
+		fmt.Fprintf(os.Stderr, "cpu profile metadata write failed: %v\n", err)
+	}
 	return nil
+}
+
+// cpuProfileMetadata is the companion JSON written beside a CPU
+// profile (Job 5.8): which binary produced it, when the publisher
+// started sending, when the profile started, how long it ran, and
+// whether the profile window overlapped the media send window.
+type cpuProfileMetadata struct {
+	ProfilePath    string        `json:"profile_path"`
+	BinarySHA      string        `json:"binary_sha256"`
+	BinarySHAError string        `json:"binary_sha_error,omitempty"`
+	PublisherStart *time.Time    `json:"publisher_start_utc,omitempty"`
+	ProfileStart   time.Time     `json:"profile_start_utc"`
+	Window         time.Duration `json:"window_ns"`
+	SendDuration   time.Duration `json:"send_duration_ns,omitempty"`
+	InWindow       bool          `json:"in_window"`
+}
+
+// cpuProfileBinarySHA is the sha256 of the running binary, computed
+// once. It is what makes a profile provably from the same binary as
+// the run (compare with the binary's sha, not just its path).
+var cpuProfileBinarySHA = sync.OnceValues(func() (string, error) {
+	executable, err := os.Executable()
+	if err != nil {
+		return "", fmt.Errorf("read executable path: %w", err)
+	}
+	data, err := os.ReadFile(executable)
+	if err != nil {
+		return "", fmt.Errorf("read executable %s: %w", executable, err)
+	}
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(sum[:]), nil
+})
+
+// writeCPUProfileMetadata writes the companion JSON for a CPU profile
+// at path + ".json". InWindow is true when the profile window
+// [profileStart, profileStart+window] overlaps the media send window
+// [publisherStart, publisherStart+sendDuration]; it is false when
+// either endpoint is unknown (recorded honestly, not guessed).
+func writeCPUProfileMetadata(path string, profileStart time.Time, window time.Duration) (cpuProfileMetadata, error) {
+	metadata := cpuProfileMetadata{
+		ProfilePath:  path,
+		ProfileStart: profileStart,
+		Window:       window,
+	}
+	sha, err := cpuProfileBinarySHA()
+	if err != nil {
+		metadata.BinarySHAError = err.Error()
+	} else {
+		metadata.BinarySHA = sha
+	}
+	if startNanos := cpuProfilePublisherStartNanos.Load(); startNanos != 0 {
+		start := time.Unix(0, startNanos).UTC()
+		metadata.PublisherStart = &start
+	}
+	if durationNanos := cpuProfileSendDurationNanos.Load(); durationNanos != 0 {
+		metadata.SendDuration = time.Duration(durationNanos)
+	}
+	if metadata.PublisherStart != nil && metadata.SendDuration > 0 {
+		sendStart := *metadata.PublisherStart
+		sendEnd := sendStart.Add(metadata.SendDuration)
+		profileEnd := profileStart.Add(window)
+		metadata.InWindow = profileStart.Before(sendEnd) && profileEnd.After(sendStart)
+	}
+	encoded, err := json.Marshal(metadata)
+	if err != nil {
+		return metadata, fmt.Errorf("encode CPU profile metadata %s: %w", path, err)
+	}
+	if err := os.WriteFile(path+".json", encoded, 0o600); err != nil {
+		return metadata, fmt.Errorf("write CPU profile metadata %s: %w", path+".json", err)
+	}
+	return metadata, nil
 }
 
 func isM7HTemporaryProfilePath(path string) bool {
@@ -7547,6 +8358,29 @@ func runM7HSFUServer(token string, heapBudgetBytes uint64, limits capacityLimits
 	if err != nil {
 		return fmt.Errorf("load SFU token auth: %w", err)
 	}
+	// 14.7: validate the resolved server config at startup. A bad
+	// config fails here and names the field instead of serving
+	// with a broken limit. One room per process, so MaxRooms is 1.
+	// The listener is inherited on fd 3, so its address is read
+	// back from the adopted listener. The key source is the key
+	// file when one is configured; when the key comes from the
+	// environment there is no file, so the source is named, not a
+	// path — the validator's "required" check is about a key being
+	// configured, which loadSFUAuthVerifier above already proved.
+	keySource := strings.TrimSpace(os.Getenv("HAMI_SFU_HMAC_KEY_FILE"))
+	if keySource == "" {
+		keySource = "HAMI_SFU_HMAC_KEY (environment)"
+	}
+	if err := validateClusterDServerConfig(clusterDServerConfig{
+		ListenAddr:     listener.Addr().String(),
+		MaxPublishers:  limits.MaxPublishers,
+		MaxSubscribers: limits.MaxSubscribers,
+		MaxRooms:       1,
+		TokenKeyFile:   keySource,
+		HeapLimitBytes: heapBudgetBytes,
+	}); err != nil {
+		return fmt.Errorf("invalid server config: %w", err)
+	}
 	shardCount := min(peerNegotiationConcurrency, 3000)
 	server := &m7hRemoteSFUServer{
 		auth:            authVerifier,
@@ -7652,8 +8486,12 @@ func runM7HSFUServer(token string, heapBudgetBytes uint64, limits capacityLimits
 }
 
 func (server *m7hRemoteSFUServer) authorized(w http.ResponseWriter, r *http.Request, token string) bool {
-	if r.Header.Get("Authorization") == "Bearer "+token {
-		return true
+	if token != "" {
+		want := []byte("Bearer " + token)
+		got := []byte(r.Header.Get("Authorization"))
+		if subtle.ConstantTimeCompare(got, want) == 1 {
+			return true
+		}
 	}
 	writeM7HJSONError(w, http.StatusUnauthorized, errors.New("unauthorized local M7-H request"))
 	return false
@@ -7662,6 +8500,12 @@ func (server *m7hRemoteSFUServer) authorized(w http.ResponseWriter, r *http.Requ
 func (server *m7hRemoteSFUServer) handleHealth(token string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if !server.authorized(w, r, token) {
+			return
+		}
+		// 14.4: readiness is dependency-checked, not unconditional.
+		// A node with a failing dependency reports not ready (503).
+		if status, code := clusterDHealthStatus(); code != http.StatusOK {
+			writeM7HJSON(w, code, map[string]any{"status": status, "failing": clusterDHealthFailing()})
 			return
 		}
 		writeM7HJSON(w, http.StatusOK, map[string]string{"status": "ready"})
@@ -7747,6 +8591,11 @@ func (server *m7hRemoteSFUServer) handlePublisher(token string) http.HandlerFunc
 		server.router.mu.Unlock()
 		peer, err := server.router.registerPublisher(server.apis[shard], request.PublisherID)
 		if err != nil {
+			// Job 2.5: the publisher entry was inserted above
+			// before registration ran. A failed registration must
+			// remove it again, or the retry sees "already exists"
+			// (409) for a publisher that never registered.
+			server.discardFailedPublisher(request.PublisherID)
 			writeM7HJSONError(w, http.StatusBadRequest, err)
 			return
 		}
@@ -7758,11 +8607,35 @@ func (server *m7hRemoteSFUServer) handlePublisher(token string) http.HandlerFunc
 		server.mu.Unlock()
 		answer, err := answerM7HRemoteOffer(r.Context(), peer, request.Offer)
 		if err != nil {
+			// Job 2.5: same stale-entry rule for an answer
+			// failure — the peer and the entry go away together.
+			server.discardFailedPublisher(request.PublisherID)
 			writeM7HJSONError(w, http.StatusBadRequest, err)
 			return
 		}
 		writeM7HJSON(w, http.StatusOK, m7hRemoteSDPResponse{Answer: answer})
 	}
+}
+
+// discardFailedPublisher removes every trace of a publisher whose
+// registration or answer failed (job 2.5): the server's publisher
+// entry, the router's receive stats, any tracks the peer managed to
+// register, and the router's publisher PeerConnection. A retry with
+// the same ID must start clean.
+func (server *m7hRemoteSFUServer) discardFailedPublisher(publisherID string) {
+	server.mu.Lock()
+	delete(server.publishers, publisherID)
+	server.mu.Unlock()
+	if server.router == nil {
+		return
+	}
+	for _, key := range server.router.trackKeysForPublisher(publisherID) {
+		_ = server.router.unregisterTrack(key)
+	}
+	server.router.mu.Lock()
+	delete(server.router.m7hPublisherReceiveStats, publisherID)
+	server.router.mu.Unlock()
+	_ = server.router.unregisterPublisher(publisherID)
 }
 
 func answerM7HRemoteOffer(
@@ -8262,15 +9135,22 @@ func (server *m7hRemoteSFUServer) handleCleanup(token string) http.HandlerFunc {
 				return
 			}
 		}
-		keys := make([]sfuTrackKey, 0, len(server.publishers))
+		// Job 2.4: cleanup uses the track keys the router stored
+		// at registration. It used to rebuild the track ID from
+		// the publisher name (stream-%04d from
+		// hami-m7h-publisher-%04d), which missed every publisher
+		// whose name does not match that pattern and left its
+		// track behind.
+		var keys []sfuTrackKey
 		server.mu.RLock()
+		publisherIDs := make([]string, 0, len(server.publishers))
 		for publisherID := range server.publishers {
-			keys = append(keys, sfuTrackKey{
-				PublisherID: publisherID,
-				TrackID:     fmt.Sprintf("stream-%04d", publisherIndexFromID(publisherID)),
-			})
+			publisherIDs = append(publisherIDs, publisherID)
 		}
 		server.mu.RUnlock()
+		for _, publisherID := range publisherIDs {
+			keys = append(keys, server.router.trackKeysForPublisher(publisherID)...)
+		}
 		for _, key := range keys {
 			if err := server.router.unregisterTrack(key); err != nil {
 				writeM7HJSONError(w, http.StatusInternalServerError, err)
@@ -8293,14 +9173,6 @@ func (server *m7hRemoteSFUServer) handleCleanup(token string) http.HandlerFunc {
 				subscriptions == 0 && authorizations == 0,
 		})
 	}
-}
-
-func publisherIndexFromID(publisherID string) int {
-	var index int
-	if _, err := fmt.Sscanf(publisherID, "hami-m7h-publisher-%04d", &index); err != nil {
-		return 0
-	}
-	return index
 }
 
 func (server *m7hRemoteSFUServer) handleShutdown(token string) http.HandlerFunc {
@@ -8836,12 +9708,22 @@ func (r *sfuRouter) forwardTrack(source *sfuPublishedTrack) {
 				cachedVersion = version
 			}
 			for _, subscription := range subscriptions {
+				// Job 4.7: a stepped-down viewer does not receive
+				// packets above its current max layer.
+				if subscription.filterLayer(l) {
+					continue
+				}
 				dropped, err := subscription.enqueueRTP(packet, l, now)
 				if dropped {
 					r.rtpQueueDropped.Add(1)
 					r.rtpQueueDropShed.Add(1)
 					r.recordRTPIntentionalShed(subscription)
 					r.requestRecoveryKeyframe(subscription)
+					// Job 4.7: consecutive queue-full drops step
+					// the viewer down a layer, then drop it.
+					subscription.recordQueueFullDrop()
+				} else {
+					subscription.recordSuccessfulEnqueue()
 				}
 				if err != nil && subscription.isActive() {
 					r.rtpDropped.Add(1)
@@ -8856,6 +9738,10 @@ func (r *sfuRouter) forwardTrack(source *sfuPublishedTrack) {
 func (t *sfuPublishedTrack) rememberPacket(packet *rtp.Packet, l packetLayer) {
 	t.packetMu.Lock()
 	defer t.packetMu.Unlock()
+	now := t.packetClockNow()
+	// Job 4.3: the cache horizon is time, not count — evict packets
+	// older than the single retransmit window before inserting.
+	t.evictExpiredPackets(now)
 	sequence := packet.SequenceNumber
 	// The sequence always advances so latestSequence() tracks the live
 	// stream position. FIX 31: layer 2 (video delta) packets ARE
@@ -8872,6 +9758,12 @@ func (t *sfuPublishedTrack) rememberPacket(packet *rtp.Packet, l packetLayer) {
 		old := t.packetCache[sequence]
 		t.packetCachePayloadBytes.Add(int64(len(packet.Payload)) - int64(len(old.Payload)))
 		t.packetCache[sequence] = packet
+		// Re-received: the packet is newly arrived, so its horizon
+		// restarts here.
+		if t.packetReceivedAt == nil {
+			t.packetReceivedAt = make(map[uint16]time.Time)
+		}
+		t.packetReceivedAt[sequence] = now
 		return
 	}
 	if t.packetCount == len(t.packetOrder) {
@@ -8879,6 +9771,7 @@ func (t *sfuPublishedTrack) rememberPacket(packet *rtp.Packet, l packetLayer) {
 		t.packetCachePayloadBytes.Add(-int64(len(t.packetCache[oldest].Payload)))
 		t.packetCachePackets.Add(-1)
 		delete(t.packetCache, oldest)
+		delete(t.packetReceivedAt, oldest)
 		t.packetOrder[t.packetStart] = sequence
 		t.packetStart = (t.packetStart + 1) % len(t.packetOrder)
 	} else {
@@ -8887,12 +9780,53 @@ func (t *sfuPublishedTrack) rememberPacket(packet *rtp.Packet, l packetLayer) {
 		t.packetCount++
 	}
 	t.packetCache[sequence] = packet
+	if t.packetReceivedAt == nil {
+		t.packetReceivedAt = make(map[uint16]time.Time)
+	}
+	t.packetReceivedAt[sequence] = now
 	t.packetCachePackets.Add(1)
 	t.packetCachePayloadBytes.Add(int64(len(packet.Payload)))
 }
 
+// packetClockNow returns the track's receipt clock (time.Now unless a
+// test injected a fake clock).
+func (t *sfuPublishedTrack) packetClockNow() time.Time {
+	if t.packetClock != nil {
+		return t.packetClock()
+	}
+	return time.Now()
+}
+
+// evictExpiredPackets drops cached packets older than the single
+// retransmit window (Job 4.3). Callers must hold packetMu. The ring
+// is in receipt order, so the head is always the oldest: evict from
+// the head while it is expired. The 512-packet ring stays as a hard
+// cap (rememberPacket still evicts the head when full); the window is
+// the horizon, the ring is the bound. A sequence with no receipt time
+// must not happen (every cached sequence records one); refuse to
+// guess and stop instead of evicting on missing evidence.
+func (t *sfuPublishedTrack) evictExpiredPackets(now time.Time) {
+	for t.packetCount > 0 {
+		oldest := t.packetOrder[t.packetStart]
+		receivedAt, ok := t.packetReceivedAt[oldest]
+		if !ok || now.Sub(receivedAt) <= sfuRetransmitWindow {
+			return
+		}
+		t.packetCachePayloadBytes.Add(-int64(len(t.packetCache[oldest].Payload)))
+		t.packetCachePackets.Add(-1)
+		delete(t.packetCache, oldest)
+		delete(t.packetReceivedAt, oldest)
+		t.packetStart = (t.packetStart + 1) % len(t.packetOrder)
+		t.packetCount--
+	}
+}
+
 func (t *sfuPublishedTrack) cachedPackets(sequences []uint16) ([]*rtp.Packet, []uint16) {
 	t.packetMu.Lock()
+	// Job 4.3: a NACK must not be served a packet older than the
+	// window when no new packet has arrived to trigger eviction in
+	// rememberPacket — prune here too, under the same lock.
+	t.evictExpiredPackets(t.packetClockNow())
 	packets := make([]*rtp.Packet, 0, len(sequences))
 	missing := make([]uint16, 0, len(sequences))
 	seen := make(map[uint16]struct{}, len(sequences))
@@ -8916,7 +9850,7 @@ func (t *sfuPublishedTrack) cachedPackets(sequences []uint16) ([]*rtp.Packet, []
 }
 
 // filterUpstreamForwardable returns the subset of sequences not forwarded
-// upstream within nackAggregationWindow, recording this forward for the
+// upstream within sfuRetransmitWindow, recording this forward for the
 // returned ones. LADDER FIX 2: the missing sequences of one track are a
 // per-track fact — every viewer NACKs the same upstream-lost packets —
 // so one upstream request per sequence per window suffices. Without
@@ -8936,13 +9870,13 @@ func (t *sfuPublishedTrack) filterUpstreamForwardable(sequences []uint16, now ti
 		t.upstreamForwardedAt = make(map[uint16]time.Time)
 	}
 	for sequence, forwarded := range t.upstreamForwardedAt {
-		if now.Sub(forwarded) > nackAggregationWindow {
+		if now.Sub(forwarded) > sfuRetransmitWindow {
 			delete(t.upstreamForwardedAt, sequence)
 		}
 	}
 	out := sequences[:0]
 	for _, sequence := range sequences {
-		if forwarded, exists := t.upstreamForwardedAt[sequence]; exists && now.Sub(forwarded) <= nackAggregationWindow {
+		if forwarded, exists := t.upstreamForwardedAt[sequence]; exists && now.Sub(forwarded) <= sfuRetransmitWindow {
 			continue
 		}
 		t.upstreamForwardedAt[sequence] = now
@@ -8966,9 +9900,23 @@ var rtpPacketCopyPool = sync.Pool{
 	New: func() any { return new(rtp.Packet) },
 }
 
+// disableRTPPacketCopyPool is a TEST-ONLY switch (Job 5.4): when
+// true, copyRTPPacketWithSharedPayload allocates a fresh packet
+// struct instead of reusing the pool, so benchmarks can measure the
+// pool's allocation-rate drop. Never set in production: the pool
+// exists because one packet fans out to thousands of copies.
+// Benchmarks that set it restore it when they finish; tests run
+// serially, so no synchronisation guards it.
+var disableRTPPacketCopyPool = false
+
 // Pion copies the packet struct before mutating the per-binding RTP header.
 func copyRTPPacketWithSharedPayload(packet *rtp.Packet) *rtp.Packet {
-	packetCopy := rtpPacketCopyPool.Get().(*rtp.Packet)
+	var packetCopy *rtp.Packet
+	if disableRTPPacketCopyPool {
+		packetCopy = new(rtp.Packet)
+	} else {
+		packetCopy = rtpPacketCopyPool.Get().(*rtp.Packet)
+	}
 	*packetCopy = *packet
 	packetCopy.Header = packet.Header.Clone()
 	packetCopy.Raw = nil
@@ -9000,6 +9948,13 @@ func (s *sfuSubscription) writeRTP(packet *rtp.Packet) (bool, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	if !s.active {
+		return false, nil
+	}
+	// Job 4.6: the fault-injection seam. Both originals (via
+	// forwardQueuedRTP) and retransmits (via handleNACK) pass through
+	// writeRTP, so one check covers both. A dropped packet reports
+	// unsent with no error, exactly as a network loss would.
+	if s.faultInjector != nil && s.faultInjector.shouldDrop(packet) {
 		return false, nil
 	}
 	if err := s.downTrack.WriteRTP(packet); err != nil {
@@ -9150,6 +10105,69 @@ func (s *sfuSubscription) stop() {
 		s.nackQueueClosed = true
 	}
 	s.mu.Unlock()
+}
+
+// Job 4.7: slow-viewer policy. A viewer whose queue stays full
+// steps down a layer (delta, then keyframe, then base only) and is
+// dropped once it cannot keep up even at the lowest layer. Each step
+// is counted; a viewer that recovers (a successful enqueue) resets
+// its strike count and stays at its current layer.
+const slowViewerStepDownStrikes = 8
+
+// maxLayerValue is the highest packet layer still forwarded to this
+// viewer. The zero value (unset) means all layers.
+func (s *sfuSubscription) maxLayerValue() packetLayer {
+	if v := s.maxLayer.Load(); v != 0 {
+		return packetLayer(v - 1)
+	}
+	return layerDelta
+}
+
+// setMaxLayer caps the layers forwarded to this viewer.
+func (s *sfuSubscription) setMaxLayer(l packetLayer) {
+	s.maxLayer.Store(int32(l) + 1)
+}
+
+// filterLayer reports whether a packet of layer l must not be
+// forwarded to this viewer (it is above the viewer's current max
+// layer) and counts it. The fan-out paths (forwardTrack, shard.run)
+// call this before enqueueing or writing.
+func (s *sfuSubscription) filterLayer(l packetLayer) bool {
+	if l <= s.maxLayerValue() {
+		return false
+	}
+	s.layerFiltered.Add(1)
+	return true
+}
+
+// recordQueueFullDrop is called from forwardTrack when a packet could
+// not be queued for this viewer (queue full, or a queued packet had
+// to be evicted to make room). After slowViewerStepDownStrikes
+// consecutive drops the viewer steps down one layer; a viewer
+// already at the lowest layer is dropped (stopped, counted). Called
+// with no locks held — it stops the viewer, which takes s.mu.
+func (s *sfuSubscription) recordQueueFullDrop() {
+	strikes := s.queueFullStrikes.Add(1)
+	if strikes < slowViewerStepDownStrikes {
+		return
+	}
+	s.queueFullStrikes.Store(0)
+	current := s.maxLayerValue()
+	if current <= layerBase {
+		s.slowViewerDrops.Add(1)
+		s.stop()
+		return
+	}
+	s.setMaxLayer(current - 1)
+	s.layerStepDowns.Add(1)
+}
+
+// recordSuccessfulEnqueue resets the strike count after a packet was
+// queued for this viewer. A viewer that recovers stays at its layer.
+func (s *sfuSubscription) recordSuccessfulEnqueue() {
+	if s.queueFullStrikes.Load() > 0 {
+		s.queueFullStrikes.Store(0)
+	}
 }
 
 func (s *sfuSubscription) isActive() bool {
@@ -9304,12 +10322,38 @@ func (s *sfuSubscription) enqueueNACK(nack *rtcp.TransportLayerNack) {
 	}
 }
 
+// nackFeedbackMaxAge (Job 4.5) is how long a queued NACK may wait
+// before it is stale and dropped instead of retransmitted. The
+// subscription's profile drives it; the zero value is broadcast.
+func (s *sfuSubscription) nackFeedbackMaxAge() time.Duration {
+	return s.nackProfile.feedbackMaxAge()
+}
+
 func (s *sfuSubscription) feedbackSnapshot() sfuFeedbackCounts {
 	s.statsMu.Lock()
 	defer s.statsMu.Unlock()
 	feedback := s.feedback
 	feedback.NACKQueueDepth = uint64(len(s.nackQueue))
 	return feedback
+}
+
+// closeUpstreamQueue closes a track's upstream feedback queue so its
+// writer goroutine exits (job 2.2). Safe to call more than once and
+// safe against a concurrent enqueueUpstreamFeedback: the close takes
+// the write lock while every send holds the read lock.
+func (track *sfuPublishedTrack) closeUpstreamQueue() {
+	if track == nil {
+		return
+	}
+	track.upstreamMu.Lock()
+	defer track.upstreamMu.Unlock()
+	if track.upstreamClosed {
+		return
+	}
+	track.upstreamClosed = true
+	if track.upstreamQueue != nil {
+		close(track.upstreamQueue)
+	}
 }
 
 // enqueueUpstreamFeedback queues a translated PLI/FIR for the
@@ -9326,15 +10370,30 @@ func (s *sfuSubscription) feedbackSnapshot() sfuFeedbackCounts {
 // 10: handleNACK runs in the nackWorker, not the read loop).
 func (r *sfuRouter) enqueueUpstreamFeedback(track *sfuPublishedTrack, packet rtcp.Packet, kind string, sub *sfuSubscription) {
 	track.upstreamWriterOnce.Do(func() { go r.upstreamFeedbackWriter(track) })
+	track.upstreamMu.RLock()
+	if track.upstreamClosed {
+		// The track is gone; its writer has exited. Feedback for a
+		// dead track is dropped, never sent on a closed channel
+		// (job 2.2). The direct-write fallback below is skipped
+		// too: the publisher peer may already be closed.
+		track.upstreamMu.RUnlock()
+		return
+	}
 	select {
 	case track.upstreamQueue <- upstreamFeedback{packet: packet, kind: kind, sub: sub}:
+		track.upstreamMu.RUnlock()
+		return
 	default:
-		if err := track.publisherPeer.WriteRTCP([]rtcp.Packet{packet}); err != nil {
-			r.recordError(fmt.Errorf("forward viewer %s feedback upstream: %w", sub.viewerID, err))
-			return
-		}
-		sub.recordFeedback(kind)
 	}
+	track.upstreamMu.RUnlock()
+	if track.publisherPeer == nil {
+		return
+	}
+	if err := track.publisherPeer.WriteRTCP([]rtcp.Packet{packet}); err != nil {
+		r.recordError(fmt.Errorf("forward viewer %s feedback upstream: %w", sub.viewerID, err))
+		return
+	}
+	sub.recordFeedback(kind)
 }
 
 // upstreamFeedbackWriter is the single writer per publisher track
@@ -9402,6 +10461,10 @@ func (r *sfuRouter) writeUpstreamBatch(track *sfuPublishedTrack, batch []upstrea
 // was dropped by the kernel before the router app saw it.
 func (r *sfuRouter) feedbackReceivedByRouter(viewerID string, key sfuTrackKey) (pli, fir, nack bool) {
 	r.mu.RLock()
+	// Job 2.6: resolve a layer-less key to the stored layer key.
+	if resolved, err := r.resolveTrackKeyLocked(key); err == nil {
+		key = resolved
+	}
 	track, ok := r.tracks[key]
 	if !ok || track == nil {
 		r.mu.RUnlock()
@@ -9567,7 +10630,7 @@ func (r *sfuRouter) nackWorker(subscription *sfuSubscription) {
 			if !subscription.isActive() {
 				return
 			}
-			if time.Since(entry.enqueuedAt) > nackFeedbackMaxQueueAge {
+			if time.Since(entry.enqueuedAt) > subscription.nackFeedbackMaxAge() {
 				subscription.recordNACKDroppedStale()
 				continue
 			}
@@ -9602,7 +10665,7 @@ func (r *sfuRouter) forwardQueuedRTP(subscription *sfuSubscription, queued queue
 			subscription.key.TrackID, subscription.viewerID))
 		return
 	}
-	if queueWait > nackMaxQueueAge {
+	if queueWait > sfuRetransmitWindow {
 		subscription.markNeedsKeyframe()
 		subscription.rtpQueueDropped.Add(1)
 		r.rtpQueueDropped.Add(1)
@@ -9785,7 +10848,7 @@ func selectNACKSequences(
 		return uint16(lastSequence-sequences[i]) < uint16(lastSequence-sequences[j])
 	})
 	for sequence, retransmitted := range retransmittedAt {
-		if now.Sub(retransmitted) > nackAggregationWindow {
+		if now.Sub(retransmitted) > sfuRetransmitWindow {
 			delete(retransmittedAt, sequence)
 		}
 	}
@@ -9793,7 +10856,7 @@ func selectNACKSequences(
 	var capped uint64
 	for _, sequence := range sequences {
 		if retransmitted, exists := retransmittedAt[sequence]; exists &&
-			now.Sub(retransmitted) <= nackAggregationWindow {
+			now.Sub(retransmitted) <= sfuRetransmitWindow {
 			duplicates++
 			continue
 		}
@@ -9866,7 +10929,7 @@ func (r *sfuRouter) handleNACK(subscription *sfuSubscription, feedback *rtcp.Tra
 	// latest) and genuinely-lost sequences (behind latest). Probes
 	// forward from every subscription — the feedback wait counts
 	// per-viewer probe forwards. Lost sequences are a per-track fact:
-	// dedup them per track within nackAggregationWindow so the
+	// dedup them per track within sfuRetransmitWindow so the
 	// publisher retransmits each one once, not once per viewer.
 	latest := subscription.source.latestSequence()
 	probes := missing[:0]
@@ -10276,6 +11339,10 @@ func runSFUCellWorker(
 	args := []string{
 		"-mode", "sfu-single",
 		"-video-file", videoPath,
+		// Job 3.2: cell workers re-read the raw file, so they need
+		// the same frame rate the parent was given; without it the
+		// worker refuses to run.
+		"-frame-rate", strconv.FormatFloat(*frameRateFlag, 'g', -1, 64),
 		"-duration", duration.String(),
 		"-sfu-publishers", strconv.Itoa(publishers),
 		"-sfu-viewers-per-publisher", strconv.Itoa(viewersPerPublisher),
@@ -10389,7 +11456,7 @@ func buildSFUScaleProofConfig(publisherCount int, viewersPerPublisher int) (sfuP
 		maxP99:              LatencyP99Max,
 		maxDissolved:        0.01,
 		feedbackSettleDelay: 60 * time.Second,
-		videoInterval:       200 * time.Millisecond,
+		videoInterval:       proofVideoInterval(),
 		logRTPPath:          true,
 	}, nil
 }
@@ -10497,13 +11564,13 @@ func runLocalM4HProof(
 	})
 }
 
-func runLocalM5HProof(
+func runLocalHardwareProof(
 	ctx context.Context,
 	videoFrames []media.Sample,
 	duration time.Duration,
 ) (sfuProofResult, error) {
 	if duration < MinDuration {
-		return sfuProofResult{}, fmt.Errorf("M5-H duration must be at least %s", MinDuration)
+		return sfuProofResult{}, fmt.Errorf("hardware-proof duration must be at least %s", MinDuration)
 	}
 	tracks := make([]sfuTrackSpec, 500)
 	viewerTrackIndexes := make([]int, 0, 1000)
@@ -10557,7 +11624,7 @@ func runLocalM6HProof(
 		// the nackWorker + bounded queue (attempt 13) fixed that, and
 		// the 120 s probe showed 0 queue-full / 0 stale drops, so 5 fps
 		// is the correct load to test now.
-		videoInterval: 200 * time.Millisecond,
+		videoInterval: proofVideoInterval(),
 	})
 }
 
@@ -10589,11 +11656,10 @@ func runLocalM7HProof(
 		viewerTrackIndexes: viewerTrackIndexes,
 		measureLatency:     true,
 		exerciseRTCP:       true,
-		// M7-H acceptance is 5 fps, same as M6-H. Explicit 200 ms:
-		// the shared proof path defaults an unset interval to
-		// videoFrameDuration (60 ms, ~16.7 fps), which would triple
-		// the load and break comparability with the M0–M6 ladder.
-		videoInterval: 200 * time.Millisecond,
+		// M7-H acceptance is 5 fps, same as M6-H. The interval comes
+		// from -frame-rate via proofVideoInterval(); the historical
+		// 200 ms keeps the load comparable with the M0–M6 ladder.
+		videoInterval: proofVideoInterval(),
 	}
 	remoteSFU, err := startM7HRemoteSFU(ctx)
 	if err != nil {
@@ -10629,7 +11695,7 @@ func buildM9HProofConfig() sfuProofConfig {
 		viewerTrackIndexes: viewerTrackIndexes,
 		measureLatency:     true,
 		exerciseRTCP:       true,
-		videoInterval:      200 * time.Millisecond,
+		videoInterval:      proofVideoInterval(),
 	}
 }
 
@@ -11710,17 +12776,16 @@ func registerH264OnlyCodecs(mediaEngine *webrtc.MediaEngine) error {
 // which does not need the generator. The responder is dead weight on a
 // recvonly PC (no RTPSenders to retransmit from).
 func newLocalSFULightAPI(settings webrtc.SettingEngine) (*webrtc.API, error) {
-	// FIX 2d: disable SRTP replay protection on viewer clients. The
-	// verdict's retransmission gate counts duplicate-sequence packets
-	// (the injected NACK requests already-received sequences, and the
-	// capture counts them as duplicates). Pion enables SRTP replay
-	// protection by default (webrtc dtlstransport.go:229), which
-	// correctly drops those retransmits before the app sees them,
-	// making the gate unobservable (053: router wrote 2 retransmits,
-	// viewer received 0). Disabling it here (viewer receivers only;
-	// the router keeps replay protection) lets the gate observe the
-	// retransmission. The router's retransmit path is unchanged.
-	settings.DisableSRTPReplayProtection(true)
+	// Job 2.1: SRTP replay protection is RESTORED on viewer clients.
+	// FIX 2d disabled it so the retransmission gate could count
+	// duplicate-sequence packets, but that left every viewer open
+	// to replayed packets. Protection is on by default now; it is
+	// disabled only in a loss-test build via the
+	// hami_disable_srtp_replay build tag
+	// (srtpReplayProtectionDisabled), never in production.
+	if srtpReplayProtectionDisabled() {
+		settings.DisableSRTPReplayProtection(true)
+	}
 	mediaEngine := &webrtc.MediaEngine{}
 	if err := registerH264OnlyCodecs(mediaEngine); err != nil {
 		return nil, fmt.Errorf("register H264-only viewer codecs: %w", err)
@@ -11833,9 +12898,9 @@ func newLocalSFUNoResponderAPIWithResponder(settings webrtc.SettingEngine, withR
 // NACKs the feedback wait needs (098: pli=4,359, fir=4,204 of
 // 5,000 forwarded). The generator repairs almost nothing (the
 // viewers already get 299/300 frames) and the responder is dead
-// weight on a recvonly peer (no RTPSenders sending RTP). Unlike
-// the viewer light API, SRTP replay protection is KEPT (the router
-// keeps it; only viewer receivers disable it per FIX 2d).
+// weight on a recvonly peer (no RTPSenders sending RTP). SRTP replay
+// protection is KEPT here, as it now is everywhere by default
+// (job 2.1 restored it on the viewer light API too).
 func newLocalSFUPublisherPeerAPI(settings webrtc.SettingEngine) (*webrtc.API, error) {
 	mediaEngine := &webrtc.MediaEngine{}
 	if err := registerH264OnlyCodecs(mediaEngine); err != nil {
@@ -11988,19 +13053,18 @@ func runLocalSFUProofWithConfig(
 	if err != nil {
 		return sfuProofResult{}, err
 	}
-	// FIX 14: disable SRTP replay protection on the publisher
-	// clients. The router forwards feedback upstream via two
-	// concurrent paths (the upstream writer for PLI/FIR and
-	// handleNACK for NACKs), so SRTCP sequence numbers can be
-	// assigned out of send order under load; the publisher's SRTCP
-	// replay window then drops the late ones (~11% in 101/105:
-	// pli=4,452-4,504, fir=4,416-4,464, nack=4,400-4,455 of 5,000
-	// forwarded, even with the 8 MiB mux buffer from FIX 13).
-	// Disabling it lets the publisher accept out-of-order RTCP,
-	// like FIX 2d did for viewer RTP retransmits. This affects
-	// only the publisher clients (clientSettings feeds clientAPI,
-	// used solely for publisherClientAPI).
-	clientSettings.DisableSRTPReplayProtection(true)
+	// Job 2.1: SRTP replay protection is RESTORED on the publisher
+	// clients. FIX 14 disabled it because the router's two upstream
+	// feedback paths assigned SRTCP sequence numbers out of order
+	// under load and the replay window dropped the late ones (~11%
+	// in 101/105). That traded correctness for delivery: protection
+	// is on by default now, disabled only in a loss-test build via
+	// the hami_disable_srtp_replay build tag
+	// (srtpReplayProtectionDisabled). If out-of-order RTCP loss
+	// returns, the fix belongs in the feedback sequencing, not here.
+	if srtpReplayProtectionDisabled() {
+		clientSettings.DisableSRTPReplayProtection(true)
+	}
 	if publisherMux != nil {
 		defer func() {
 			if closeErr := publisherMux.Close(); closeErr != nil {
@@ -12129,20 +13193,17 @@ func runLocalSFUProofWithConfig(
 				if muxErr != nil {
 					return sfuProofResult{}, muxErr
 				}
-				// FIX 22b: disable SRTP replay protection on the SFU
-				// router. The router is the last place it is still on
-				// (FIX 2d disabled it on viewer clients, FIX 14 on
-				// publisher clients, both because the window drops
-				// legitimate out-of-order packets in this system).
-				// Run 144: the kernel dropped only ~400 packets while
-				// ~1.4M vanished between the router's writeRTP and the
-				// viewers' Pion receivers and ~370/track between the
-				// publisher's WriteSample and the router's read, so the
-				// loss is inside Pion's read path; the replay window
-				// is the prime suspect (it drops late packets after
-				// the multi-second scheduler stalls). If the loss
-				// does not move, this change is reverted.
-				routerSettings.DisableSRTPReplayProtection(true)
+				// Job 2.1: SRTP replay protection is RESTORED on the
+				// SFU router. FIX 22b disabled it as the prime
+				// suspect for run 144's in-Pion loss (~1.4M packets
+				// vanished between writeRTP and the viewers), with a
+				// note to revert if the loss did not move. Protection
+				// is on by default now, disabled only in a loss-test
+				// build via the hami_disable_srtp_replay build tag
+				// (srtpReplayProtectionDisabled).
+				if srtpReplayProtectionDisabled() {
+					routerSettings.DisableSRTPReplayProtection(true)
+				}
 				if udpMux != nil {
 					routerMuxes = append(routerMuxes, udpMux)
 				}
@@ -12176,6 +13237,12 @@ func runLocalSFUProofWithConfig(
 		router, err = newSFURouter(routerAPIs[0])
 		if err != nil {
 			return sfuProofResult{}, err
+		}
+		// Job 4.6: install the proof's per-viewer fault injectors
+		// before any viewer subscribes, so subscribe() attaches
+		// them. Viewers without an entry get no injection.
+		for viewerID, injector := range config.faultInjection {
+			router.SetFaultInjector(viewerID, injector)
 		}
 	}
 	publisherSendStats := make(map[string]*m7hPublisherSendStats)
@@ -12382,9 +13449,10 @@ func runLocalSFUProofWithConfig(
 				// 196k, and retransmits barely moved (11.39M vs 12.51M).
 				// The counting branch overrode FIX 2c's light API exactly
 				// when the socket diagnostic is on. The mux + counting
-				// still come from viewerClientSettings; the light API also
-				// disables SRTP replay protection (FIX 2d), which the
-				// diagnostic path had silently re-enabled.
+				// still come from viewerClientSettings; the light API
+				// keeps SRTP replay protection on by default (job 2.1
+				// restored it; FIX 2d's disable survives only behind
+				// the hami_disable_srtp_replay build tag).
 				lightAPI, lightErr := newLocalSFULightAPI(viewerClientSettings)
 				if lightErr != nil {
 					return sfuProofResult{}, fmt.Errorf("create viewer light API for %s: %w", viewerID, lightErr)
@@ -13373,7 +14441,7 @@ func runLocalSFUProofWithConfig(
 		ScoringMode:                    config.scoringMode,
 		DissolveMaxP99:                 config.maxP99,
 		DissolveMaxFraction:            config.maxDissolved,
-		NACKMaxQueueAge:                nackMaxQueueAge,
+		NACKMaxQueueAge:                sfuRetransmitWindow,
 		HostPreflight:                  config.hostPreflight,
 	}
 	if config.measureLatency {
@@ -13397,15 +14465,16 @@ func runLocalSFUProofWithConfig(
 			len(trackIDsReceived) == 1 &&
 			trackIDsReceived[0] == viewer.key.TrackID
 		viewerResult := sfuViewerResult{
-			ViewerID:             viewer.id,
-			RequestedTrackID:     viewer.key.TrackID,
-			ReceivedTrackIDs:     trackIDsReceived,
-			Received:             snapshot,
-			RetransmittedPackets: viewer.capture.duplicatePackets(viewer.key.TrackID),
-			NACKSequencesSent:    viewer.capture.nackSequencesSent.Load(),
-			NACKPacketsSent:      viewer.capture.nackPacketsSent.Load(),
-			PeerConnection:       viewer.client.ConnectionState().String(),
-			OnlyRequested:        onlyRequested,
+			ViewerID:         viewer.id,
+			RequestedTrackID: viewer.key.TrackID,
+			ReceivedTrackIDs: trackIDsReceived,
+			Received:         snapshot,
+			RetransmittedPackets: viewer.capture.duplicatePackets(viewer.key.TrackID) +
+				viewer.capture.recoveredPackets(viewer.key.TrackID),
+			NACKSequencesSent: viewer.capture.nackSequencesSent.Load(),
+			NACKPacketsSent:   viewer.capture.nackPacketsSent.Load(),
+			PeerConnection:    viewer.client.ConnectionState().String(),
+			OnlyRequested:     onlyRequested,
 		}
 		if config.exerciseRTCP {
 			if router != nil {
@@ -13617,7 +14686,9 @@ func (r *sfuRouter) waitForTracks(ctx context.Context, sources []sfuMediaSource)
 		r.mu.RLock()
 		registered := 0
 		for _, source := range sources {
-			if r.tracks[source.key] != nil {
+			// Job 2.6: a layer-less key counts as registered when
+			// exactly one layer is stored for it.
+			if _, err := r.resolveTrackKeyLocked(source.key); err == nil {
 				registered++
 			}
 		}
@@ -13639,6 +14710,10 @@ func (r *sfuRouter) waitForTracks(ctx context.Context, sources []sfuMediaSource)
 
 func (r *sfuRouter) waitForFirstFrame(ctx context.Context, key sfuTrackKey) (uint16, error) {
 	r.mu.RLock()
+	// Job 2.6: resolve a layer-less key to the stored layer key.
+	if resolved, err := r.resolveTrackKeyLocked(key); err == nil {
+		key = resolved
+	}
 	source := r.tracks[key]
 	r.mu.RUnlock()
 	if source == nil {
@@ -13667,6 +14742,7 @@ func newSFUViewerCapture(
 		tracks:          make(map[string]*streamCounter),
 		sequenceCounts:  make(map[string]map[uint16]uint64),
 		duplicates:      make(map[string]uint64),
+		recovered:       make(map[string]uint64),
 		latencyClock:    clock,
 		latencyRecorder: recorder,
 		errors:          make(chan error, 8),
@@ -13764,7 +14840,13 @@ func newSFUViewerCapture(
 				// the read loop, so the sender goroutine takes no
 				// capture locks.
 				if gapTracker != nil {
-					if nackBatch := gapTracker.observe(packet.SequenceNumber, time.Now()); len(nackBatch) != 0 {
+					nackBatch, recovered := gapTracker.observeWithRecovery(packet.SequenceNumber, time.Now())
+					if recovered {
+						capture.mu.Lock()
+						capture.recovered[track.ID()]++
+						capture.mu.Unlock()
+					}
+					if len(nackBatch) != 0 {
 						select {
 						case nackJobs <- nackSendJob{snapshot: counter.snapshotResult(), sequences: nackBatch}:
 						default:
@@ -14059,7 +15141,16 @@ func (a *videoFrameAssembler) processPacket(packet *rtp.Packet) {
 		a.lateSequences[packet.SequenceNumber] = struct{}{}
 		a.lateTimestamps[packet.SequenceNumber] = packet.Timestamp
 		if packet.Marker && !alreadyKnown {
-			a.lateMarkers[packet.SequenceNumber] = struct{}{}
+			// Job 3.5: a marker whose frame already completed —
+			// through the active path, so it never entered the
+			// span — must not be re-added. Its duplicate packet
+			// matches the span (the span still covers its
+			// sequences), and re-adding the marker lets the scan
+			// report the frame a second time. The sequence itself
+			// is still recorded above; only the marker is skipped.
+			if _, completed := a.completedMarkers[packet.SequenceNumber]; !completed {
+				a.lateMarkers[packet.SequenceNumber] = struct{}{}
+			}
 		}
 		a.lateComplete()
 		// FIX 31: consuming the span can prove the active frame's
@@ -14220,6 +15311,9 @@ func (a *videoFrameAssembler) completeActiveFrameIfReady() {
 	a.nextFrameFirstSequence = a.markerSequence + 1
 	a.active = false
 	clear(a.frameSequences)
+	// Job 3.5: remember the completed marker before the span
+	// advance below, which may consume the span.
+	a.recordCompletedMarker(markerSequence)
 	// FIX 31: a frame that completes normally may be the first
 	// sequence of the retained span (a gap-created span starts at
 	// the frame that later completed). Advance the span past it so
@@ -14274,6 +15368,9 @@ func (a *videoFrameAssembler) mergeLateSpan(frameStart, newLast uint16, lowTimes
 		if a.lateMarkers == nil {
 			a.lateMarkers = make(map[uint16]struct{})
 		}
+		if a.completedMarkers == nil {
+			a.completedMarkers = make(map[uint16]struct{})
+		}
 	}
 	if int16(newLast-a.lateLastSequence) > 0 {
 		a.lateLastSequence = newLast
@@ -14300,6 +15397,23 @@ func (a *videoFrameAssembler) clearLateSpan() {
 	clear(a.lateSequences)
 	clear(a.lateTimestamps)
 	clear(a.lateMarkers)
+	clear(a.completedMarkers)
+}
+
+// Job 3.5: recordCompletedMarker remembers that sequence was the
+// marker of a frame that completed, so a later single-packet rescue
+// can prove its frame starts at the marker (see
+// lateMarkerFrameStart). Only while a late span exists: a boundary
+// fact is only ever needed for a frame in the span, and the map
+// shares the span's lifecycle, so it stays bounded by the span.
+func (a *videoFrameAssembler) recordCompletedMarker(marker uint16) {
+	if !a.lateActive {
+		return
+	}
+	if a.completedMarkers == nil {
+		a.completedMarkers = make(map[uint16]struct{})
+	}
+	a.completedMarkers[marker] = struct{}{}
 }
 
 // lateComplete attempts to complete frames from the retained late
@@ -14358,12 +15472,12 @@ func (a *videoFrameAssembler) lateCompleteOne() bool {
 			// lateFirstSequence where it is so the earlier frame
 			// can still complete if its retransmit arrives late.
 			// Without this, one unrecoverable packet costs the
-			// frames after it too. The frame must have at least
-			// one non-marker packet observed (frameStart < marker);
-			// a lone marker proves nothing about the frame before
-			// it, so it never rescues on its own.
+			// frames after it too. A lone marker rescues only
+			// when its frame is proven single-packet — see
+			// lateMarkerFrameStart (Job 3.5).
 			if _, ok := a.lateMarkerFrameStart(marker, prev); ok {
 				a.completedQueue = append(a.completedQueue, uint64(a.lateTimestamps[marker]))
+				a.recordCompletedMarker(marker)
 				delete(a.lateMarkers, marker)
 				return true
 			}
@@ -14371,7 +15485,31 @@ func (a *videoFrameAssembler) lateCompleteOne() bool {
 			continue
 		}
 		a.completedQueue = append(a.completedQueue, uint64(a.lateTimestamps[marker]))
-		a.lateFirstSequence = marker + 1
+		a.recordCompletedMarker(marker)
+		// Job 3.5: a full-run completion proves [prev, marker]
+		// whole, but it must not abandon frames the scan skipped.
+		// A skipped frame's packets may be merely reordered, not
+		// lost, and the assembler has no evidence about them yet:
+		// jumping lateFirstSequence past a sequence that has not
+		// arrived drops that packet on arrival and loses its frame
+		// (a single-packet frame has no rescue path at all). Clamp
+		// the advance to the first sequence in [lateFirstSequence,
+		// marker] that has not arrived yet, so the skipped frame can
+		// still complete when its packets arrive. The completed
+		// marker is deleted, so a later scan cannot report the same
+		// frame twice. A genuinely lost frame is still abandoned:
+		// the span-length bound in mergeLateSpan clears a span over
+		// lateSpanMaxSequences.
+		delete(a.lateMarkers, marker)
+		newFirst := marker + 1
+		for offset := 0; offset <= int(uint16(marker-a.lateFirstSequence)); offset++ {
+			sequence := a.lateFirstSequence + uint16(offset)
+			if _, present := a.lateSequences[sequence]; !present {
+				newFirst = sequence
+				break
+			}
+		}
+		a.lateFirstSequence = newFirst
 		if int16(a.lateFirstSequence-a.lateLastSequence) > 0 {
 			// FIX 31: the span is fully consumed. The active
 			// frame (if any) starts at the first unconsumed
@@ -14384,8 +15522,19 @@ func (a *videoFrameAssembler) lateCompleteOne() bool {
 			// abandoned) is this safe — a consumed sequence was
 			// proven to belong to a completed span frame, never
 			// to the active frame.
+			// Job 3.5: the consumed span proves the active
+			// frame's start boundary, so mark it known: the next
+			// frame's marker must complete through the normal
+			// path, not the boundary-unknown merge (which is
+			// skipped when no span exists and would drop the
+			// frame silently if the span was just consumed).
+			// If the proven start still points at a lost
+			// sequence ahead of the active frame, the normal
+			// path only waits — the frame is merged on
+			// finalise, never dropped.
 			if a.active && int16(a.lateFirstSequence-a.nextFrameFirstSequence) > 0 {
 				a.nextFrameFirstSequence = a.lateFirstSequence
+				a.frameBoundaryKnown = true
 			}
 			a.clearLateSpan()
 		}
@@ -14397,11 +15546,13 @@ func (a *videoFrameAssembler) lateCompleteOne() bool {
 // lateMarkerFrameStart returns the first sequence in [prev, marker]
 // carrying the marker's timestamp, and whether every sequence from
 // there through the marker is present in the late span. It is false
-// when the marker's own frame is incomplete, when the frame has no
-// non-marker packet observed (frameStart == marker), or when a
-// present sequence carries no timestamp (which must not happen —
-// every sequence enters the span with one — so the scan refuses to
-// guess rather than completing on incomplete evidence).
+// when the marker's own frame is incomplete, or when a present
+// sequence carries no timestamp (which must not happen — every
+// sequence enters the span with one — so the scan refuses to guess
+// rather than completing on incomplete evidence). A lone marker
+// (frameStart == marker) completes only when the immediately
+// preceding sequence is present with a different timestamp, proving
+// the frame is a single packet (Job 3.5).
 func (a *videoFrameAssembler) lateMarkerFrameStart(marker, prev uint16) (uint16, bool) {
 	markerTs, ok := a.lateTimestamps[marker]
 	if !ok {
@@ -14425,7 +15576,35 @@ func (a *videoFrameAssembler) lateMarkerFrameStart(marker, prev uint16) (uint16,
 			break
 		}
 	}
-	if !found || frameStart == marker {
+	if !found {
+		return 0, false
+	}
+	if frameStart == marker {
+		// Job 3.5: a lone marker can still prove its frame is a
+		// single packet. The immediately preceding sequence belongs
+		// to an earlier frame when it is present in the span with a
+		// different timestamp: all packets of one frame share one
+		// RTP timestamp, and sequence order is frame order, so this
+		// frame starts at the marker. Without this, a single-packet
+		// frame whose run is broken by an earlier sequence that
+		// completed through the active path — and so never entered
+		// the span — can never complete: the full run fails on the
+		// missing sequence and the rescue refuses a lone marker.
+		// If the preceding sequence never arrived, or shares the
+		// timestamp, the frame may be incomplete and the rescue
+		// still refuses — unless the preceding sequence is the
+		// marker of a frame that already completed (recorded in
+		// completedMarkers): frames are sequential and disjoint,
+		// so the next frame starts at the completed marker plus
+		// one, which is this marker — the frame is a single
+		// packet. This covers a predecessor that completed
+		// through the active path and so never entered the span.
+		if prevTs, ok := a.lateTimestamps[marker-1]; ok && prevTs != markerTs {
+			return marker, true
+		}
+		if _, completed := a.completedMarkers[marker-1]; completed {
+			return marker, true
+		}
 		return 0, false
 	}
 	for offset := 0; ; offset++ {
@@ -14469,13 +15648,22 @@ func newNACKGapTracker() *nackGapTracker {
 // sequences to NACK now (nil when nothing is due). now is a parameter
 // so tests can control retry timing exactly.
 func (t *nackGapTracker) observe(sequence uint16, now time.Time) []uint16 {
+	due, _ := t.observeWithRecovery(sequence, now)
+	return due
+}
+
+// observeWithRecovery mirrors observe and also reports whether sequence
+// filled a previously recorded gap (genuine retransmission recovery).
+func (t *nackGapTracker) observeWithRecovery(sequence uint16, now time.Time) ([]uint16, bool) {
+	recovered := false
 	if _, ok := t.missing[sequence]; ok {
 		delete(t.missing, sequence)
+		recovered = true
 	}
 	if !t.haveLast {
 		t.haveLast = true
 		t.lastSeq = sequence
-		return nil
+		return nil, recovered
 	}
 	if ahead := int16(sequence - t.lastSeq); ahead > 0 {
 		if ahead <= nackGapMaxJump {
@@ -14504,7 +15692,7 @@ func (t *nackGapTracker) observe(sequence uint16, now time.Time) []uint16 {
 		}
 	}
 	if len(due) == 0 {
-		return nil
+		return nil, recovered
 	}
 	sort.Slice(due, func(i, j int) bool { return int16(due[i]-due[j]) < 0 })
 	if len(due) > nackGapMaxBatch {
@@ -14515,7 +15703,7 @@ func (t *nackGapTracker) observe(sequence uint16, now time.Time) []uint16 {
 		entry.attempts++
 		entry.lastNacked = now
 	}
-	return due
+	return due, recovered
 }
 
 // nackSendJob is one NACK batch for the per-track sender goroutine.
@@ -14590,8 +15778,18 @@ func (c *sfuViewerCapture) duplicatePackets(trackID string) uint64 {
 	return c.duplicates[trackID]
 }
 
+func (c *sfuViewerCapture) recoveredPackets(trackID string) uint64 {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.recovered[trackID]
+}
+
 func (r *sfuRouter) subscriptionFeedback(viewerID string, key sfuTrackKey) sfuFeedbackCounts {
 	r.mu.RLock()
+	// Job 2.6: resolve a layer-less key to the stored layer key.
+	if resolved, err := r.resolveTrackKeyLocked(key); err == nil {
+		key = resolved
+	}
 	viewer := r.viewers[viewerID]
 	var subscription *sfuSubscription
 	if viewer != nil {
@@ -14652,7 +15850,8 @@ func (r *sfuRouter) publisherPeer(publisherID string) *webrtc.PeerConnection {
 // rotation, publisher g's first IDR is at send index (30-g)%30, so the 20
 // IDRs spread across the 6 s IDR period in 200 ms steps (see
 // TestIDRPhaseStaggerSpreadsFirstIDR). The rotation changes no timestamp
-// (frameTimestamp still advances 5,400 ticks/frame) and no frame count —
+// (frameTimestamp still advances one send interval per frame — 18,000
+// ticks at 5 fps, job 3.1) and no frame count —
 // every publisher still sends the same 302 frames, just starting at a
 // different point in the file.
 func frameIndexForSend(sendIndex, phaseOffset uint64, frameCount int) uint64 {
@@ -14673,7 +15872,16 @@ func sendSFUVideo(
 	cellIndex int,
 ) (map[string]uint64, error) {
 	if videoInterval <= 0 {
-		videoInterval = videoFrameDuration
+		// Job 3.1/3.2: when no interval is configured, the frames
+		// themselves carry the rate (readH264FramesWithFrameRate
+		// stamps Duration = 1/fps), so send at that rate. Only when
+		// the frames carry no Duration do we fall back to the
+		// historical 60 ms videoFrameDuration.
+		if len(frames) > 0 && frames[0].Duration > 0 {
+			videoInterval = frames[0].Duration
+		} else {
+			videoInterval = videoFrameDuration
+		}
 	}
 	sourcesByPublisher := make(map[string][]sfuMediaSource)
 	publisherIDs := make([]string, 0)
@@ -14767,7 +15975,12 @@ func sendPublisherVideo(
 		// LADDER FIX 3: rotate the file by the publisher's phase offset
 		// (see frameIndexForSend) so IDRs spread across the IDR period.
 		frame := frames[frameIndexForSend(frameIndex, framePhaseOffset, len(frames))]
-		ticks := sampleRTPTicks(frame, 90000)
+		// Job 3.1: the timestamp step follows the SEND interval
+		// (videoInterval), not the sample's stored Duration. The
+		// scale harness sends every 200 ms (5 fps) while the file
+		// stamps 60 ms (5,400 ticks); stamping the send interval
+		// (18,000 ticks) is what a receiver observes.
+		ticks := videoTimestampStep(videoInterval, frame, 90000)
 		if ticks == 0 {
 			return errors.New("video frame duration produces no RTP timestamp ticks")
 		}
@@ -15086,7 +16299,10 @@ func waitForSFUFeedback(
 					return nil, fmt.Errorf("publisher received NACK for wrong SSRC on %s: %d",
 						event.trackID, event.mediaSSRC)
 				}
-				if event.trackID == "stream-0253" && sourceSSRCs[event.trackID] == 0 {
+				// Job 2.7: the baseline log used to fire only for
+				// one historical track ID. It fires for every
+				// track's first accepted NACK now.
+				if sourceSSRCs[event.trackID] == 0 {
 					fmt.Fprintf(
 						os.Stderr,
 						"publisher SSRC baseline: track=%s expectedPublisherSSRC=%d source=first accepted upstream NACK MediaSSRC\n",
@@ -15113,7 +16329,9 @@ func waitForSFUFeedback(
 				if event.mediaSSRC == 0 || sourceSSRCs[event.trackID] != 0 && event.mediaSSRC != sourceSSRCs[event.trackID] {
 					return nil, fmt.Errorf("publisher received PLI for wrong SSRC on %s: %d", event.trackID, event.mediaSSRC)
 				}
-				if event.trackID == "stream-0253" && sourceSSRCs[event.trackID] == 0 {
+				// Job 2.7: as above, the baseline log fires for
+				// every track, not one historical track ID.
+				if sourceSSRCs[event.trackID] == 0 {
 					fmt.Fprintf(
 						os.Stderr,
 						"publisher SSRC baseline: track=%s expectedPublisherSSRC=%d source=first accepted upstream PLI MediaSSRC\n",
@@ -15130,7 +16348,7 @@ func waitForSFUFeedback(
 					// subscribe, before any NACK/PLI has set this track's
 					// SSRC baseline. At 3,000 publishers the feedback
 					// timing spreads out and the FIR beats the baseline
-					// (stream-1885, M7-H attempt 1). Skipping it is safe:
+					// on some tracks. Skipping it is safe:
 					// the FIR still reaches the publisher via the router;
 					// this loop only measures. The completeness check
 					// below still requires a valid FIR after the baseline
@@ -15148,16 +16366,17 @@ func waitForSFUFeedback(
 				}
 				if event.mediaSSRC != 0 || len(event.targets) != 1 ||
 					event.targets[0] != sourceSSRCs[event.trackID] {
-					if event.trackID == "stream-0253" {
-						fmt.Fprintf(
-							os.Stderr,
-							"publisher FIR SSRC check: track=%s mediaSSRC=%d carriedTargets=%v expectedPublisherSSRC=%d expectedSource=first accepted upstream NACK/PLI MediaSSRC\n",
-							event.trackID,
-							event.mediaSSRC,
-							event.targets,
-							sourceSSRCs[event.trackID],
-						)
-					}
+					// Job 2.7: the FIR SSRC diagnostic used to log
+					// only for one historical track ID; it logs for
+					// every track now.
+					fmt.Fprintf(
+						os.Stderr,
+						"publisher FIR SSRC check: track=%s mediaSSRC=%d carriedTargets=%v expectedPublisherSSRC=%d expectedSource=first accepted upstream NACK/PLI MediaSSRC\n",
+						event.trackID,
+						event.mediaSSRC,
+						event.targets,
+						sourceSSRCs[event.trackID],
+					)
 					return nil, fmt.Errorf(
 						"publisher received FIR for wrong SSRC on %s: mediaSSRC=%d targets=%v expectedPublisherSSRC=%d",
 						event.trackID,

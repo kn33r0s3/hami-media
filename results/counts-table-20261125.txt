@@ -1,0 +1,15 @@
+| Trial | Verdict (from raw) | p95 med | p99 med | Frames | Delivered cross-check |
+|---|---|---|---|---|---|
+| FINAL | PASS (8000/8000) | 15.38 ms | 25.5 ms | {'302': 8000} | True |
+| gomem4g | FAIL (0/8000) | 896.72 ms | 1001.46 ms | range 129-215, median 165, n=8000 | True |
+| gomem8g | FAIL (0/8000) | 882.38 ms | 985.02 ms | range 133-207, median 177, n=8000 | True |
+| stall-capture | PASS (8000/8000) | 16.39 ms | 28.3 ms | {'302': 8000} | True |
+| verify-s005 | PASS (8000/8000) | 13.94 ms | 24.46 ms | {'302': 8000} | True |
+| verify-t0-repeat | FAIL (0/8000) | 873.0 ms | 982.93 ms | range 137-217, median 180, n=8000 | True |
+| verify-t0-repeat2 | FAIL (0/8000) | 871.77 ms | 980.98 ms | range 135-217, median 189, n=8000 | True |
+| T0 | RAW-MISSING (no raw JSON in work dir) | - | - | - | - |
+| T1 | RAW-MISSING (no raw JSON in work dir) | - | - | - | - |
+| T2 | RAW-MISSING (no raw JSON in work dir) | - | - | - | - |
+| T3 | RAW-MISSING (no raw JSON in work dir) | - | - | - | - |
+| T4 | RAW-MISSING (no raw JSON in work dir) | - | - | - | - |
+MATCH: every trial with a raw file agrees with REPORT.md; T0/T1/T2/T3/T4 remain RAW-MISSING (their JSONs are not in the work dir).

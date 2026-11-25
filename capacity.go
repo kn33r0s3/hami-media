@@ -11,11 +11,11 @@
 // (capacityAnchors). The rules are:
 //
 //   - NEVER extrapolate beyond measured anchors. A device stronger than
-//     the reference Mac gets the anchor maxima, never more.
-//   - Scale DOWN for weaker devices relative to the reference Mac, never
+//     the reference machine gets the anchor maxima, never more.
+//   - Scale DOWN for weaker devices relative to the reference machine, never
 //     up. The scale factor is min(cores/10, RAM/24 GiB), clamped to 1.
 //   - The scale-down is a conservative heuristic, not a measurement: the
-//     anchors were measured on one device only (the reference Mac), so a
+//     anchors were measured on one device only (the reference machine), so a
 //     weaker device gets proportionally less and the result is labelled
 //     as derived, not measured.
 //   - A pending anchor is never used by the derivation. The
@@ -23,7 +23,7 @@
 //     that is still running; until it lands as PASS it must not be
 //     claimed as measured and must not raise any limit.
 //
-// Reference device: Apple M5, 10 cores, 24 GiB RAM (Niroj's Mac).
+// Reference device: Apple M5, 10 cores, 24 GiB RAM (the reference machine).
 // Measured anchors (strict gate: p99 <= 150 ms, zero lost frames):
 //
 //   - 20 publishers x 5,000 viewers — PASS strict.
@@ -154,7 +154,7 @@ type deviceProfile struct {
 	CPUCores int
 	// RAMTotalMiB is total physical memory.
 	RAMTotalMiB uint64
-	// Swap figures reuse readAudioSwapMiB (platform readers).
+	// Swap figures reuse readSwapMiBChecked (the shared checked reader).
 	SwapUsedMiB  float64
 	SwapFreeMiB  float64
 	SwapTotalMiB float64
@@ -190,7 +190,7 @@ type capacityLimits struct {
 }
 
 // detectDeviceProfile reads the live device profile. It reuses the
-// platform readers (readAudioSwapMiB) and the per-platform
+// platform readers (readSwapMiBChecked) and the per-platform
 // readDeviceProfilePlatform hook; NIC enumeration is shared because
 // net.Interfaces works on every platform.
 func detectDeviceProfile() (deviceProfile, error) {
@@ -201,7 +201,7 @@ func detectDeviceProfile() (deviceProfile, error) {
 	if err := readDeviceProfilePlatform(&profile); err != nil {
 		return profile, err
 	}
-	swapUsed, swapFree, err := readAudioSwapMiB()
+	swapUsed, swapFree, err := readSwapMiBChecked()
 	if err != nil {
 		return profile, fmt.Errorf("read device swap usage: %w", err)
 	}
@@ -237,7 +237,7 @@ func detectDeviceProfile() (deviceProfile, error) {
 //	publishers = floor(anchorMaxPublishers * factor), at least 1
 //	viewers    = floor(anchorMaxViewers * factor), at least 1
 //
-// Worked for the reference Mac (10 cores, 24 GiB RAM):
+// Worked for the reference machine (10 cores, 24 GiB RAM):
 // factor = min(10/10, 24/24) = 1.0, so 20 publishers and 7,500
 // viewers — exactly the highest passing anchors, nothing more.
 // A 5-core / 12 GiB device gets factor 0.5: 10 publishers, 3,750
@@ -283,15 +283,20 @@ func deriveCapacityNotes(profile deviceProfile, limits capacityLimits) []string 
 	var notes []string
 	if limits.ScaleFactor < 1 {
 		notes = append(notes, fmt.Sprintf(
-			"scaled down by %.2f from the reference Mac (cores %d/10, RAM %.1f/24 GiB); this is a conservative heuristic, not a measurement",
+			"scaled down by %.2f from the reference machine (cores %d/10, RAM %.1f/24 GiB); this is a conservative heuristic, not a measurement",
 			limits.ScaleFactor, profile.CPUCores, float64(profile.RAMTotalMiB)/1024))
 	} else {
 		notes = append(notes, "reference device (or stronger): recommended limits are exactly the highest passing anchors, never above them")
 	}
-	if profile.SwapTotalMiB > 0 && profile.SwapFreeMiB < float64(sfuHostMinFreeSwapMiB) {
+	// The scale-proof preflight judges by USED swap, not free swap
+	// (24 Nov 2026: macOS resizes the pool, so free swap is capped by
+	// the live pool size and the old free >= 2,048 MiB floor could
+	// never pass; used swap is the distress signal). Mirror that rule
+	// here: warn only when used swap is above the cap.
+	if profile.SwapTotalMiB > 0 && profile.SwapUsedMiB > float64(sfuHostMaxUsedSwapMiB) {
 		notes = append(notes, fmt.Sprintf(
-			"WARNING: free swap is %.0f MiB, below the %d MiB scale-proof preflight bar (sfuHostMinFreeSwapMiB); a scale run would refuse to start",
-			profile.SwapFreeMiB, sfuHostMinFreeSwapMiB))
+			"WARNING: used swap is %.0f MiB, above the %d MiB scale-proof preflight cap (sfuHostMaxUsedSwapMiB); a scale run would refuse to start",
+			profile.SwapUsedMiB, sfuHostMaxUsedSwapMiB))
 	}
 	for _, anchor := range capacityAnchors {
 		if anchor.Result == capacityAnchorPending {

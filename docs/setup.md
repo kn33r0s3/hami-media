@@ -16,10 +16,12 @@ cd hami-media
 ## Build it
 
 ```sh
-go build -o hami-media .
+go build -trimpath -o hami-media .
 ```
 
 The build downloads its dependencies once (Pion WebRTC and friends). After that it works offline.
+
+`-trimpath` matters: without it the binary embeds the builder's home-directory paths. Never ship a binary built without it, and never commit the binary itself (see `.gitignore`).
 
 ## Make a test video
 

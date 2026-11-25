@@ -84,7 +84,7 @@ func TestDeriveCapacityLimitsUsesTheWeakerAxis(t *testing.T) {
 }
 
 func TestDeriveCapacityLimitsNeverScalesUp(t *testing.T) {
-	// A device far stronger than the reference Mac still gets the
+	// A device far stronger than the reference machine still gets the
 	// anchor maxima — never more than a measurement.
 	profile := referenceDeviceProfile()
 	profile.CPUModel = "hypothetical 32-core server"

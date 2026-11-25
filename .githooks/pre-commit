@@ -1,0 +1,12 @@
+#!/bin/sh
+# Pre-commit gate (job 0.3): leak scan + gofmt check.
+# Install once: git config core.hooksPath .githooks
+set -e
+cd "$(git rev-parse --show-toplevel 2>/dev/null || echo .)"
+python3 scripts/leak-scan.py .
+if [ -n "$(gofmt -l . 2>/dev/null | grep -v '^$')" ]; then
+  echo "pre-commit: unformatted Go files:"
+  gofmt -l .
+  exit 1
+fi
+echo "pre-commit: leak scan + gofmt clean"

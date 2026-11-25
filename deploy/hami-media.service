@@ -1,0 +1,53 @@
+# Job 17.2 — systemd unit for hami-media (fresh install path).
+#
+# The server's design fits socket activation exactly: it adopts an
+# inherited TCP listener on fd 3 (runM7HSFUServer) and reads its
+# bearer token on fd 4, while the HMAC key comes from
+# HAMI_SFU_HMAC_KEY_FILE. So deployment is a .socket + .service pair;
+# the service never takes a token on argv (argv is visible via ps).
+#
+# Install (see docs/systemd-install-17.2.md):
+#   sudo install -m 0755 hami-media /usr/local/bin/hami-media
+#   go build -trimpath -o /tmp/hami-media-launch ./deploy/launch
+#   sudo install -m 0755 /tmp/hami-media-launch /usr/local/bin/hami-media-launch
+#   sudo install -m 0644 deploy/hami-media.service deploy/hami-media.socket /etc/systemd/system/
+#   sudo install -m 0600 /etc/hami-media/token.key    # bearer token, <= 256 bytes
+#   sudo install -m 0600 /etc/hami-media/hmac.key     # HMAC key, >= 32 bytes
+#   printf 'HAMI_SFU_HMAC_KEY_FILE=/etc/hami-media/hmac.key\n' | sudo tee /etc/hami-media/env
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now hami-media.socket
+#
+# The service runs the m7h-sfu server as the unprivileged user `hami`.
+# It does NOT run scale proofs: proofs are one-shot measurements, not
+# a service. The unit is the serving path; the proof path stays a
+# manual invocation (scripts/host-preflight.sh + the binary).
+[Unit]
+Description=hami-media WebRTC forwarding server
+Documentation=https://github.com/kn33r0s3/hami-media
+After=network-online.target
+Wants=network-online.target
+Requires=hami-media.socket
+
+[Service]
+Type=simple
+User=hami
+Group=hami
+EnvironmentFile=/etc/hami-media/env
+ExecStart=/usr/local/bin/hami-media-launch
+Restart=on-failure
+RestartSec=5s
+# Hardening: no home, no new privileges, private /tmp, read-only root.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/hami-media
+# Resource caps: the heap budget is enforced in-process
+# (-max-heap-bytes, job 18.5); these are the outer systemd bounds.
+MemoryMax=6G
+TasksMax=4096
+# The server needs many UDP sockets and files at scale.
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target

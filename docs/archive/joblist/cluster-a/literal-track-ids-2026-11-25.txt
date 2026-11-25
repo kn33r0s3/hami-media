@@ -1,0 +1,18 @@
+# Literal track IDs outside test files — repo-wide search, 2026-11-25 (job 2.7)
+
+Command: grep -rn --include="*.go" -E '"stream-[0-9]{4}"|"stream-(red|blue|main|cascade|decoy)"|stream-0253|stream-1885' . | grep -v "_test.go"
+Result: the three "stream-0253" debug gates and the "stream-1885" comment are GONE
+(0 hits for either in main.go). What remains below are harness fixture INPUTS
+(they are the IDs the proof harnesses publish with, not debug gates keyed on
+production traffic) plus generated Sprintf("stream-%04d", ...) IDs. Removing
+them is rename churn; left for the coordinator's decision.
+
+./main.go:10387:			{publisherID: "hami-sfu-publisher", trackID: "stream-red"},
+./main.go:10388:			{publisherID: "hami-sfu-publisher", trackID: "stream-blue"},
+./main.go:10648:// with offset 1250 becomes "hami-sfu-viewer-9755", "stream-0001" with
+./main.go:10649:// offset 5 becomes "stream-0006" (the %04d width is preserved). IDs
+./main.go:10821:			{publisherID: "hami-m1h-publisher", trackID: "stream-main"},
+./main.go:11077:		sourceTrackID    = "stream-0001"
+./main.go:11079:		relayTrackID     = "stream-0002"
+./main.go:11547:		trackID          = "stream-cascade"
+./main.go:11548:		decoyTrackID     = "stream-decoy"

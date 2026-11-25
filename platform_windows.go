@@ -57,3 +57,22 @@ func m7hProcessCPUSeconds() (float64, error) {
 	return float64(user.Nanoseconds())/float64(time.Second) +
 		float64(kernel.Nanoseconds())/float64(time.Second), nil
 }
+
+// readProcessRSSBytes is not supported on Windows: no RSS source is
+// wired in, so it returns an error instead of fake numbers (same
+// honesty rule as the host snapshot stubs above). sampleRuntimeResources
+// records the error and leaves RSS at 0.
+func readProcessRSSBytes() (uint64, error) {
+	return 0, errors.New("process RSS reading not supported on windows")
+}
+
+// readMeminfoKiB reads one /proc/meminfo value. Linux-only: the reader
+// lives in platform_linux.go. On this platform there is no /proc, so
+// the stub errors instead of fake numbers. The only caller is
+// TestAudioSwapCheckRunsOnLinux, which skips at runtime off Linux —
+// the stub exists so the test file still compiles on every platform
+// (merge fix: vet failed on darwin/windows with undefined
+// readMeminfoKiB).
+func readMeminfoKiB(key string) (uint64, error) {
+	return 0, fmt.Errorf("readMeminfoKiB is Linux-only (/proc/meminfo)")
+}

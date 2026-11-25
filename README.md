@@ -2,6 +2,27 @@
 
 > hami-media is a small video server. One person streams live video. Thousands of people watch it at the same time, in one room. It runs on your own computer. No cloud service is needed.
 
+## Scope
+
+**In scope:** the hami-media forwarding core (the SFU router, its
+packet/frame handling, loss recovery, and layered forwarding), its
+test harness and benchmarks, and the work that decides whether it is
+a measured alternative to LiveKit OSS — including its HLS/CMAF
+packager, TURN relay, signed join tokens, and observability, as
+tracked in the archived job records (`docs/archive/joblist/`).
+
+**Out of scope:** the pilot model, the gateway, the live site,
+teaching, SFT, and any other product. Those are separate tracks; no
+change in this repo touches them. Field tests on real phones, a real
+CDN, codec licensing, an external penetration test, the swap-zero
+mechanism investigation, and the first target product / latency
+budget each need owner approval first (see
+[docs/approval-register.md](docs/approval-register.md)).
+
+**How work lands here:** VM first — every change runs and passes in
+the VM before it is synced anywhere else. See [docs/change-log.md](docs/change-log.md)
+and [docs/stop-rules.md](docs/stop-rules.md).
+
 ## What it does
 
 - One room, many viewers. A publisher sends one video stream. The server copies it to every viewer.
@@ -44,9 +65,9 @@ go test ./...
 
 ## The auto capacity detector
 
-hami-media looks at your machine before it runs a big stream. It reads memory pressure, free swap, free memory, and free disk. If the machine is not healthy enough, it refuses to start the run instead of failing halfway through. While a run is going, a watchdog keeps watching and stops the run if the machine runs out of room.
+hami-media looks at your machine before it runs a big stream. It reads memory pressure, used swap, free memory, and free disk. If the machine is not healthy enough, it refuses to start the run instead of failing halfway through. While a run is going, a watchdog keeps watching and stops the run if the machine runs out of room.
 
-At server startup the detector also sets the limits for you. It takes the biggest audience ever measured (20 publishers, 7,500 viewers) and scales it down for weaker machines by one rule: the smaller of cores/10 and RAM GiB/24. A stronger machine never gets more than the measured maximum. See what your machine gets with `./hami-media capacity`. You can always override it. See [docs/capacity.md](docs/capacity.md).
+At server startup the detector also sets the limits for you. It takes the biggest audience ever measured (20 publishers, 8,000 viewers, six strict passes — T0, T1, T4, FINAL, verify-s005, stall-capture; REPORT.md §2.7) and scales it down for weaker machines by one rule: the smaller of cores/10 and RAM GiB/24. A stronger machine never gets more than the measured maximum — the coded maxima are still 20 publishers / 7,500 viewers until the derivation is re-run with the new 8,000 anchor. See what your machine gets with `./hami-media capacity`. You can always override it. See [docs/capacity.md](docs/capacity.md).
 
 ## How to override limits
 
@@ -78,6 +99,13 @@ Today hami-media is a program you run, not a library you import. That is deliber
 2. **Talk to its HTTP API.** The server has endpoints for health, publish, view, stats, and shutdown. They all need a Bearer token plus a per-client token. See [docs/api-auth.md](docs/api-auth.md).
 3. **Run its TURN server.** `./hami-media -mode turn-server` relays video for viewers behind strict routers. See [docs/turn.md](docs/turn.md).
 
+Client SDKs (JavaScript/TypeScript, Kotlin/Java, Swift, Dart,
+React Native) are planned, not built. The API contract they will
+target is documented in [docs/integration.md](docs/integration.md)
+from the actual endpoints in the code — the hami-media serve
+path and the hami-sfu `/api/publish`, `/api/subscribe`,
+`/api/rooms` endpoints.
+
 Splitting the server core into an importable Go package is planned work. It is listed under [Known limits](#known-limits).
 
 ## What it is built on
@@ -100,7 +128,7 @@ Splitting the server core into an importable Go package is planned work. It is l
 ## Known limits
 
 - **No library package yet.** The server core is one `package main`. A split into an importable package with a thin command is the next structural job. It was left out of this release on purpose: a second change to the same files is landing now, and the split must be done against the finished files, not a snapshot.
-- **The detector only knows what was measured.** Its recommendation comes from the anchor table (20 x 5,000 and 20 x 7,500 passed; 20 x 10,000 failed at the Mac loopback wall). A pending 10 x 6,000 row is not used until its measurement lands. See [docs/capacity.md](docs/capacity.md).
+- **The detector only knows what was measured.** Its recommendation comes from the anchor table (20 x 5,000, 20 x 6,000, 20 x 7,000, 20 x 7,200, 20 x 7,500 and 20 x 8,000 passed; 20 x 10,000 failed at the Mac loopback wall). A pending 10 x 6,000 row is not used until its measurement lands. See [docs/capacity.md](docs/capacity.md).
 - **One room per server process.** That is the design, not a bug.
 - **10,000 viewers is a measured wall on one Mac.** At 20 publishers x 10,000 viewers the macOS loopback path itself runs out, not this code. See [docs/capacity.md](docs/capacity.md).
 

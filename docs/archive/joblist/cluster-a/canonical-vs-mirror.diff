@@ -1,0 +1,71 @@
+# NOTE: historical evidence of the canonical-vs-mirror rename pass.
+# The chip-named identifiers inside (M5-H) appear only on removed
+# lines: they are what the rename deleted, not live identifiers.
+--- main.go (pre-merge reference copy)
++++ main.go (merged tree)
+@@ -78,7 +78,7 @@
+ 	// the post-clean state (pool 2,048, used 366, free 1,682):
+ 	// 1,918 > 512 fails, 366 <= 512 passes. Memory pressure level
+ 	// (NORMAL) stays a separate, independent check.
+-	sfuHostMaxUsedSwapMiB       = 512
++	sfuHostMaxUsedSwapMiB = 512
+ 	// sfuHostMinFreeMemNoSwapMiB is the free-memory headroom required
+ 	// when macOS holds no swap pool (total swap 0, as after a reboot):
+ 	// free swap is always 0 there and can never pass the swap rule,
+@@ -1325,7 +1325,7 @@
+ 		case "m4h":
+ 			result, err = runLocalM4HProof(ctx, videoFrames, *duration)
+ 		case "m5h":
+-			result, err = runLocalM5HProof(ctx, videoFrames, *duration)
++			result, err = runLocalHardwareProof(ctx, videoFrames, *duration)
+ 		case "m6h":
+ 			result, err = runLocalM6HProof(ctx, videoFrames, *duration)
+ 		case "m7h":
+@@ -2064,7 +2064,7 @@
+ }
+ 
+ // M7-H attempt 6: endpoint-attribution trace (measurement-only, no behaviour
+-// change). ChatGPT's decisive measurement for the attempt-5 no-socket
++// change). A decisive measurement for the attempt-5 no-socket
+ // explosion: which process writes the ~29M datagrams that die as kernel
+ // "no socket" drops, to which destination ports, and what was those
+ // destinations' socket lifecycle when the datagrams arrived?
+@@ -4852,11 +4852,17 @@
+ 	if err != nil {
+ 		return audioRungResult{}, err
+ 	}
+-	if duration >= MinDuration && speakerCount == 10 && listenerCount == 100 && swapFree < 2048 {
+-		return audioRungResult{}, fmt.Errorf(
+-			"10x100 audio rung blocked by host safety floor: swap free %.2f MiB, need at least 2048 MiB",
+-			swapFree,
+-		)
++	if duration >= MinDuration && speakerCount == 10 && listenerCount == 100 {
++		hostSnapshot, snapshotErr := readSFUHostSnapshot()
++		if snapshotErr != nil {
++			return audioRungResult{}, fmt.Errorf("read host safety snapshot for 10x100 audio rung: %w", snapshotErr)
++		}
++		if failures := sfuHostMemoryFailures(hostSnapshot, false); len(failures) > 0 {
++			return audioRungResult{}, fmt.Errorf(
++				"10x100 audio rung blocked by host memory safety check: %v",
++				failures,
++			)
++		}
+ 	}
+ 	events, err := audioHandRaiseSmoke(
+ 		roomID,
+@@ -10574,13 +10580,13 @@
+ 	})
+ }
+ 
+-func runLocalM5HProof(
++func runLocalHardwareProof(
+ 	ctx context.Context,
+ 	videoFrames []media.Sample,
+ 	duration time.Duration,
+ ) (sfuProofResult, error) {
+ 	if duration < MinDuration {
+-		return sfuProofResult{}, fmt.Errorf("M5-H duration must be at least %s", MinDuration)
++		return sfuProofResult{}, fmt.Errorf("hardware-proof duration must be at least %s", MinDuration)
+ 	}
+ 	tracks := make([]sfuTrackSpec, 500)
+ 	viewerTrackIndexes := make([]int, 0, 1000)

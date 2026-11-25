@@ -93,8 +93,9 @@ go run . -mode audio-rung1 -duration 3s \
 ```
 
 The smoke is TEST evidence only; it does not meet the 60-second/300-frame
-measurement limits. The full 10×100 run stops before setup when macOS reports
-less than 2 GiB free swap. The harness uses local FFmpeg/libopus for Opus
+measurement limits. Before the full 10×100 audio workload starts, the host
+memory check blocks the run if used swap exceeds 512 MiB, or if free memory
+is below 8 GiB when there is no swap pool. The harness uses local FFmpeg/libopus for Opus
 encoding, server mixing, and decoded-PCM rendering. The reconnect smoke runs
 during active media and keeps the same listener and logical subscription IDs.
 Its hand-raise grant and decline are local TEST event traces, not writes to a
@@ -388,7 +389,7 @@ Verify every viewer's requested-track isolation, latency thresholds,
 frame count, duration and NACK/PLI/FIR handling independently. This is
 local TEST evidence, not a capacity or capture-to-render claim.
 
-## M5-H local 500-publisher proof
+## Local 500-publisher proof
 
 The `m5h` runner uses 500 publisher PeerConnections and 1,000 viewers,
 with two selectively authorized viewers per publisher track. It reuses
@@ -521,3 +522,61 @@ that exact path before its results count.
   are part of the result.
 - Do not shorten the run to fit a fast result — 60 s and 300 frames
   are minimums, not targets.
+
+## API contract and SDK plan (next track — contract documented, SDKs not built)
+
+Go does not restrict hami-media to Go apps. Clients talk to the
+server over standard WebRTC plus a small HTTP contract, so an SDK
+in any language can publish or watch. The contract below is read
+from the actual endpoints in the code — nothing here is invented.
+
+### hami-media serve path (`-mode m7h-sfu`, `main.go`)
+
+All endpoints take a Bearer token (made fresh per server run,
+held by the harness) plus a per-client token (minted with
+`-mode mint-token`, HMAC-signed, short-lived, room + roles
+scoped). Every endpoint is Bearer-gated.
+
+| Endpoint | What it does |
+|---|---|
+| `/health` | Server health. |
+| `/publisher` | Publish: SDP offer in, SDP answer out. |
+| `/publisher/ready` | Publisher readiness. |
+| `/viewer` | Subscribe: SDP offer in, SDP answer out. |
+| `/stats` | Active tracks / viewers / subscriptions. |
+| `/receive-stats` | Subscriber-side receive statistics. |
+| `/heap-profile` | Go heap profile (diagnostic). |
+| `/goroutine-profile` | Goroutine profile (diagnostic). |
+| `/cpu-profile` | CPU profile (diagnostic). |
+| `/cleanup` | Clean shutdown of a room. |
+| `/shutdown` | Stop the server process. |
+| `/metrics` | Prometheus metrics, loopback listener only. |
+
+Capacity limits are enforced at insert time: past the limit,
+`/publisher` returns 503 `publisher limit reached: max N
+publishers` and `/viewer` returns 503 `subscriber limit reached:
+max N subscribers`. See [capacity.md](capacity.md).
+
+### hami-sfu (`main.go`, sibling service)
+
+| Endpoint | What it does |
+|---|---|
+| `POST /api/publish/{room}` | Publish: SDP offer in, SDP answer out. |
+| `POST /api/subscribe/{room}` | Subscribe: SDP offer in, SDP answer out. |
+| `GET /api/rooms/{room}` | Track list for the room. |
+| `GET /` | The streamer + viewer page (Stage 6). |
+
+All three API routes are auth-wrapped (Bearer token + per-client
+token, same scheme as hami-media).
+
+### SDK plan (planned, not built)
+
+SDKs for JavaScript/TypeScript (web), Kotlin/Java (Android),
+Swift (iOS), Dart (Flutter) and React Native, each wrapping the
+contract above: configure server address + credentials, mint or
+receive a client token, publish or watch. No SDK building starts
+until the contract is stable and the server core is split into an
+importable package. The working latency assumption the SDKs are
+designed around: the large audience tolerates a few seconds of
+latency (segmented HTTP delivery), sub-second WebRTC only for the
+few who interact.

@@ -1,0 +1,5 @@
+soak soak-20261125-083047 pid=30575 duration=60s
+ts_utc	rss_kib	threads
+2026-11-25T08:30:51Z	9948	6
+2026-11-25T08:31:51Z	17048	7
+soak soak-20261125-083047 exit=1 samples=4

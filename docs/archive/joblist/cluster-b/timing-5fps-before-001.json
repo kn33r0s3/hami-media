@@ -1,0 +1,12 @@
+{
+  "label": "before-3.1",
+  "frames_per_second": 5,
+  "send_interval_ms": 200,
+  "frames_sent": 12,
+  "timestamp_step_mean_ticks": 5400,
+  "timestamp_step_min_ticks": 5400,
+  "timestamp_step_max_ticks": 5400,
+  "send_gap_mean_ms": 200.08098436363636,
+  "send_gap_stddev_ms": 0.46364302836366805,
+  "apparent_receiver_jitter_ms": 71.20426929962333
+}

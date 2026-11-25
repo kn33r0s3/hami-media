@@ -1,5 +1,8 @@
 # Hami SFU: token auth + TURN (Part 3)
 
+Historical evidence note: raw log availability is tracked in
+[the archive evidence register](archive/log-evidence-status.md).
+
 ## Current auth state (surveyed 22 Nov 2026, before this change)
 
 - The remote SFU process (`-mode=m7h-sfu`) already had a **random
@@ -79,7 +82,7 @@ with an SDP answer.
 
 ## TURN
 
-**Server:** coturn is not installed on the Mac (checked 22 Nov
+**Server:** coturn is not installed on the test machine (checked 22 Nov
 2026: no `turnserver`, not in Homebrew), so the local proof uses
 `pion/turn` v5.1.3, an existing module dependency. It exercises UDP
 TURN, long-term credentials, and relay allocations confined to ports
@@ -122,7 +125,7 @@ candidate type is `relay` on both client `PeerConnection`s and
 that H.264 frames flow publisher → router → viewer. The raw
 `part3 TURN relay pair:` log lines carry the proof.
 
-**Measured proof (Mac, 22 Nov 2026, go 1.27.4 darwin/arm64):**
+**Measured proof (macOS, 22 Nov 2026, Go 1.27.4):**
 
 - Full suite `82 pass / 0 fail / 0 skip` (20.9 s), including all
   5 UDP loopback tests and the relay test (6.07 s).
@@ -138,7 +141,7 @@ that H.264 frames flow publisher → router → viewer. The raw
   with `sendto: operation not permitted` on 127.0.0.1 UDP — a
   sandbox artifact, not a code failure.
 
-**Binary-level smoke** (`~/hami/logs/part3-smoke-006.log` and
+**Binary-level smoke** (`logs/part3-smoke-006.log` and
 `part3-smoke-001.log`, 22 Nov 2026):
 
 - `-mode=mint-token` prints a 2-part, 184-char token; a bad role

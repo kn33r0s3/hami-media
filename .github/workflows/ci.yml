@@ -1,22 +1,71 @@
-name: Go CI
+# CI gate (job 0.3). Runs on every push and pull request.
+# Steps mirror what scripts/test-all.sh runs locally; the leak scan
+# and the tests are both hard gates.
+name: ci
 
 on:
   push:
-    branches: [main]
   pull_request:
-    branches: [main]
-
-permissions:
-  contents: read
 
 jobs:
-  test:
+  check:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
-          go-version-file: go.mod
-          cache: true
-      - run: go test ./...
-      - run: go build ./...
+          go-version: "1.26"
+      - name: leak scan
+        run: python3 scripts/leak-scan.py .
+      - name: gofmt
+        run: |
+          if [ -n "$(gofmt -l .)" ]; then
+            echo "unformatted Go files:"
+            gofmt -l .
+            exit 1
+          fi
+      - name: go vet
+        run: go vet ./...
+      - name: tests
+        # The NACK loss test is skipped here; it runs in the tagged
+        # step below (carve-out, docs/nack-test-carve-out.md).
+        run: go test -skip 'TestLocalSFURoutesAuthorizedStreamsAndRTCP' -count=1 ./...
+      - name: NACK loss test (tagged carve-out)
+        # -run ONLY this test, never the whole suite: the replay test
+        # fails under this tag by design. The tag is test-only, never
+        # for a shipped/production binary.
+        run: go test -tags hami_disable_srtp_replay -run 'TestLocalSFURoutesAuthorizedStreamsAndRTCP' -count=1 ./...
+      - name: race (core package)
+        run: go test -race -skip 'TestLocalSFURoutesAuthorizedStreamsAndRTCP' -count=1 ./...
+
+  # Loopback integration job (job 15.3; fragment from
+  # docs/ci/loopback-job.yml). Runs the full suite (which includes
+  # the loopback integration tests) on every push and pull request.
+  # See docs/ci.md for the known runner difference: the six UDP
+  # tests fail only in the VM sandbox, never on a real runner —
+  # except the NACK loss test, which is skipped in the default suite
+  # and run separately with the carve-out tag below
+  # (docs/nack-test-carve-out.md), because it can never pass on a
+  # default build since job 2.1 restored SRTP replay protection.
+  loopback-integration:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26"
+      - name: gofmt
+        run: test -z "$(gofmt -l .)"
+      - name: go vet
+        run: go vet ./...
+      - name: leak scan
+        run: ./scripts/leak-scan.sh .
+      - name: tests (unit + loopback integration)
+        # The NACK loss test is skipped here; it runs in the tagged
+        # step below (carve-out, docs/nack-test-carve-out.md).
+        run: go test -skip 'TestLocalSFURoutesAuthorizedStreamsAndRTCP' ./...
+      - name: NACK loss test (tagged carve-out)
+        # -run ONLY this test, never the whole suite: the replay test
+        # fails under this tag by design. The tag is test-only, never
+        # for a shipped/production binary.
+        run: go test -tags hami_disable_srtp_replay -run 'TestLocalSFURoutesAuthorizedStreamsAndRTCP' -count=1 ./...

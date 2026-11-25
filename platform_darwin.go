@@ -92,7 +92,7 @@ func readSFUHostSnapshot() (sfuHostSnapshot, error) {
 	if err != nil {
 		return snapshot, fmt.Errorf("parse macOS VM pressure %q: %w", strings.TrimSpace(string(pressureOutput)), err)
 	}
-	snapshot.SwapUsedMiB, snapshot.SwapFreeMiB, err = readAudioSwapMiB()
+	snapshot.SwapUsedMiB, snapshot.SwapFreeMiB, err = readSwapMiBChecked()
 	if err != nil {
 		return snapshot, err
 	}
@@ -153,7 +153,7 @@ func readSFUHostSnapshotLive(baseline sfuHostSnapshot) (sfuHostSnapshot, error) 
 		return snapshot, fmt.Errorf("read macOS VM pressure: %w", err)
 	}
 	snapshot.PressureLevel = int(pressure)
-	snapshot.SwapUsedMiB, snapshot.SwapFreeMiB, err = readAudioSwapMiB()
+	snapshot.SwapUsedMiB, snapshot.SwapFreeMiB, err = readSwapMiBChecked()
 	if err != nil {
 		return snapshot, err
 	}
@@ -190,4 +190,36 @@ func readAudioSwapMiB() (used, free float64, returnErr error) {
 	used = float64(usedBytes) / (1024 * 1024)
 	free = float64(freeBytes) / (1024 * 1024)
 	return used, free, nil
+}
+
+// readProcessRSSBytes returns the current process's resident set size
+// in bytes, from `ps -o rss=` (KiB). Darwin has no /proc; the sampler
+// runs once per second in a background goroutine, so one ps fork per
+// sample is acceptable for a diagnostic (the darwin preflight already
+// shells out to df/vm_stat the same way).
+func readProcessRSSBytes() (uint64, error) {
+	output, err := exec.Command("ps", "-o", "rss=", "-p", strconv.Itoa(syscall.Getpid())).Output()
+	if err != nil {
+		return 0, fmt.Errorf("read process RSS via ps: %w", err)
+	}
+	fields := strings.Fields(string(output))
+	if len(fields) == 0 {
+		return 0, fmt.Errorf("ps RSS output is empty")
+	}
+	residentKiB, err := strconv.ParseUint(fields[0], 10, 64)
+	if err != nil {
+		return 0, fmt.Errorf("parse ps RSS %q: %w", fields[0], err)
+	}
+	return residentKiB * 1024, nil
+}
+
+// readMeminfoKiB reads one /proc/meminfo value. Linux-only: the reader
+// lives in platform_linux.go. On this platform there is no /proc, so
+// the stub errors instead of fake numbers. The only caller is
+// TestAudioSwapCheckRunsOnLinux, which skips at runtime off Linux —
+// the stub exists so the test file still compiles on every platform
+// (merge fix: vet failed on darwin/windows with undefined
+// readMeminfoKiB).
+func readMeminfoKiB(key string) (uint64, error) {
+	return 0, fmt.Errorf("readMeminfoKiB is Linux-only (/proc/meminfo)")
 }
