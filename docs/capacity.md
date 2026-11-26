@@ -46,7 +46,7 @@ What "systematic fail at the loopback limit" means: the 20 x 10,000 run fails th
 | Viewers per publisher | 500 | `sfuScaleMaxViewersPerPublisher` |
 | Total viewers | 10,000 | `sfuScaleMaxViewers` |
 | Delivered-frame p99 latency | 150 ms | `LatencyP99Max` |
-| Heap | 4 GiB default | set when `GOMEMLIMIT` is unset |
+| Go runtime memory target | 4 GiB default, reduced to the M7-H viewer-based budget when smaller | set when `GOMEMLIMIT` is unset |
 
 These caps are the ceiling. The measured numbers above are what the machine actually did.
 
@@ -63,7 +63,7 @@ The detector's job: look at the machine, and set the biggest safe audience for t
 
 If the machine is not healthy, the run refuses to start. It prints why. While the run is going, a watchdog reads the same numbers with cheap system calls (no new processes, so it cannot stall the video) and stops the run if the machine runs out of room.
 
-**Part 2 — automatic maximums (`capacity.go`, landed).** At server startup the detector reads the device — CPU model and core count, total RAM, swap, file-descriptor limits, UDP buffer sizes, network interfaces — and recommends the publisher and viewer limits from the measured anchors only. Nothing is guessed, and nothing is extrapolated past a measurement.
+**Part 2 — automatic maximums (`capacity.go`, landed).** At server startup the detector reads the device — CPU model and core count, total RAM, swap status, file-descriptor limits, UDP buffer sizes, network interfaces — and recommends the publisher and viewer limits from the measured anchors only. CPU and RAM determine the scaling factor; unknown swap is reported as unknown and does not prevent those limits from being calculated. Nothing is extrapolated past a measurement.
 
 The rule is one line:
 
@@ -92,9 +92,11 @@ by the cross-checked re-run. The flat swapouts are explained by
 macOS compressor-first behaviour (pageouts rise slowly, swapouts
 only grow when the compressor spills), not by a stuck counter.
 
-If device detection fails, the server does not invent numbers. It falls back to the highest measured anchors (20 / 7,500) and logs a warning saying so.
+If device detection fails, automatic mode starts with a conservative 1-publisher / 1-viewer starter cap and logs that it is not a capacity measurement. Explicit operator limits still override the starter cap. Turning auto-capacity off remains an explicit choice to use the highest measured anchors (20 / 7,500).
 
-A zero swap total is never treated as healthy: the shared reader (`readSwapMiBChecked`, fixed27) re-reads once, and if the total still reads 0 it returns an error — the preflight retries as unknown, the watchdog aborts, the detector fails instead of printing figures. Until the zero-reading glitch is identified, no-swap protection is unverified in that edge case (REPORT.md §2.8).
+A zero swap total is never treated as healthy by scale-proof preflight: the shared reader (`readSwapMiBChecked`, fixed27) re-reads once, and if the total still reads 0 it returns an error — the preflight retries as unknown and the watchdog aborts. The capacity report, however, can still recommend CPU/RAM-scaled starter limits and clearly labels swap as unknown. Until the zero-reading glitch is identified, no-swap protection is unverified in that edge case (REPORT.md §2.8).
+
+M7-H SFU service mode also derives a default heap budget from its effective viewer limit, using the existing per-viewer estimate and headroom. It lowers the Go runtime memory target to that budget when smaller than the default and `GOMEMLIMIT` is unset. This is a protective estimate, not a measured low-end capacity guarantee; set `-max-heap-bytes` or `GOMEMLIMIT` explicitly when operating with a different memory policy.
 
 See your own machine's answer with no server running:
 

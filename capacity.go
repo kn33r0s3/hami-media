@@ -155,9 +155,12 @@ type deviceProfile struct {
 	// RAMTotalMiB is total physical memory.
 	RAMTotalMiB uint64
 	// Swap figures reuse readSwapMiBChecked (the shared checked reader).
-	SwapUsedMiB  float64
-	SwapFreeMiB  float64
-	SwapTotalMiB float64
+	// SwapKnown distinguishes an unavailable reading from a zero pool.
+	SwapUsedMiB   float64
+	SwapFreeMiB   float64
+	SwapTotalMiB  float64
+	SwapKnown     bool
+	SwapReadError string
 	// FDSoftLimit / FDHardLimit are the RLIMIT_NOFILE soft/hard
 	// limits for this process (0 = unknown).
 	FDSoftLimit uint64
@@ -183,16 +186,15 @@ type capacityLimits struct {
 	// ScaleFactor is the down-scale applied to the anchor maxima
 	// (1.0 on the reference device; never above 1.0).
 	ScaleFactor float64
-	// AutoDetected is true when the values came from the detector
-	// and false when they are the anchor maxima used with
-	// -auto-capacity=false.
+	// AutoDetected is true when values came from the detector and
+	// false for an explicit auto-capacity opt-out or a safe starter.
 	AutoDetected bool
 }
 
-// detectDeviceProfile reads the live device profile. It reuses the
-// platform readers (readSwapMiBChecked) and the per-platform
-// readDeviceProfilePlatform hook; NIC enumeration is shared because
-// net.Interfaces works on every platform.
+// detectDeviceProfile reads the live device profile. Capacity limits
+// depend on CPU and RAM, so an unavailable swap reading is reported
+// but does not prevent those limits from being derived. Scale-proof
+// host gates still use readSwapMiBChecked directly and fail closed.
 func detectDeviceProfile() (deviceProfile, error) {
 	profile := deviceProfile{
 		OS:       runtime.GOOS,
@@ -203,11 +205,13 @@ func detectDeviceProfile() (deviceProfile, error) {
 	}
 	swapUsed, swapFree, err := readSwapMiBChecked()
 	if err != nil {
-		return profile, fmt.Errorf("read device swap usage: %w", err)
+		profile.SwapReadError = err.Error()
+	} else {
+		profile.SwapUsedMiB = swapUsed
+		profile.SwapFreeMiB = swapFree
+		profile.SwapTotalMiB = swapUsed + swapFree
+		profile.SwapKnown = true
 	}
-	profile.SwapUsedMiB = swapUsed
-	profile.SwapFreeMiB = swapFree
-	profile.SwapTotalMiB = swapUsed + swapFree
 	interfaces, err := net.Interfaces()
 	if err != nil {
 		return profile, fmt.Errorf("list device network interfaces: %w", err)
@@ -293,7 +297,16 @@ func deriveCapacityNotes(profile deviceProfile, limits capacityLimits) []string 
 	// the live pool size and the old free >= 2,048 MiB floor could
 	// never pass; used swap is the distress signal). Mirror that rule
 	// here: warn only when used swap is above the cap.
-	if profile.SwapTotalMiB > 0 && profile.SwapUsedMiB > float64(sfuHostMaxUsedSwapMiB) {
+	if !profile.SwapKnown {
+		reason := profile.SwapReadError
+		if reason == "" {
+			reason = "no swap reading was provided"
+		}
+		notes = append(notes, fmt.Sprintf(
+			"WARNING: swap usage is unknown (%s); these auto limits use CPU and RAM only, and scale-proof preflight still refuses unknown swap",
+			reason,
+		))
+	} else if profile.SwapTotalMiB > 0 && profile.SwapUsedMiB > float64(sfuHostMaxUsedSwapMiB) {
 		notes = append(notes, fmt.Sprintf(
 			"WARNING: used swap is %.0f MiB, above the %d MiB scale-proof preflight cap (sfuHostMaxUsedSwapMiB); a scale run would refuse to start",
 			profile.SwapUsedMiB, sfuHostMaxUsedSwapMiB))
@@ -370,6 +383,48 @@ func resolveCapacityLimits(auto bool, publishersExplicit bool, publishers int, s
 	return limits, notes, nil
 }
 
+func resolveCapacityLimitsWithDetectionFailure(
+	auto bool,
+	publishersExplicit bool,
+	publishers int,
+	subscribersExplicit bool,
+	subscribers int,
+) (capacityLimits, []string, error) {
+	if !auto {
+		return resolveCapacityLimits(false, publishersExplicit, publishers, subscribersExplicit, subscribers, deviceProfile{})
+	}
+	if publishersExplicit && publishers < 0 {
+		return capacityLimits{}, nil, fmt.Errorf("resolve capacity limits: -max-publishers must not be negative, got %d", publishers)
+	}
+	if subscribersExplicit && subscribers < 0 {
+		return capacityLimits{}, nil, fmt.Errorf("resolve capacity limits: -max-subscribers must not be negative, got %d", subscribers)
+	}
+
+	limits := capacityLimits{MaxPublishers: 1, MaxSubscribers: 1}
+	notes := []string{
+		"WARNING: device detection failed; using safe starter limits of 1 publisher and 1 viewer (not a capacity measurement)",
+	}
+	if publishersExplicit {
+		limits.MaxPublishers = publishers
+		notes = append(notes, fmt.Sprintf("explicit -max-publishers=%d overrides the safe starter limit", publishers))
+		if publishers == 0 {
+			notes = append(notes, "explicit -max-publishers=0 disables the publisher limit (unlimited)")
+		} else if publishers > capacityAnchorMaxPublishers() {
+			notes = append(notes, fmt.Sprintf("WARNING: explicit -max-publishers=%d exceeds the highest measured anchor (%d publishers) — unmeasured, use at your own risk", publishers, capacityAnchorMaxPublishers()))
+		}
+	}
+	if subscribersExplicit {
+		limits.MaxSubscribers = subscribers
+		notes = append(notes, fmt.Sprintf("explicit -max-subscribers=%d overrides the safe starter limit", subscribers))
+		if subscribers == 0 {
+			notes = append(notes, "explicit -max-subscribers=0 disables the subscriber limit (unlimited)")
+		} else if subscribers > capacityAnchorMaxViewers() {
+			notes = append(notes, fmt.Sprintf("WARNING: explicit -max-subscribers=%d exceeds the highest measured anchor (%d viewers) — unmeasured, use at your own risk", subscribers, capacityAnchorMaxViewers()))
+		}
+	}
+	return limits, notes, nil
+}
+
 // capacityLimitString renders one limit for the startup log and the
 // capacity report: a number, or "unlimited" for 0.
 func capacityLimitString(limit int) string {
@@ -386,8 +441,16 @@ func writeCapacityReport(w io.Writer, profile deviceProfile, limits capacityLimi
 	fmt.Fprintf(w, "hami-media capacity\n")
 	fmt.Fprintf(w, "device: %s / %s %s / %d cores / %.1f GiB RAM\n",
 		profile.CPUModel, profile.OS, profile.Kernel, profile.CPUCores, float64(profile.RAMTotalMiB)/1024)
-	fmt.Fprintf(w, "swap: used %.0f MiB, free %.0f MiB, total %.0f MiB\n",
-		profile.SwapUsedMiB, profile.SwapFreeMiB, profile.SwapTotalMiB)
+	if profile.SwapKnown {
+		fmt.Fprintf(w, "swap: used %.0f MiB, free %.0f MiB, total %.0f MiB\n",
+			profile.SwapUsedMiB, profile.SwapFreeMiB, profile.SwapTotalMiB)
+	} else {
+		reason := profile.SwapReadError
+		if reason == "" {
+			reason = "no reading available"
+		}
+		fmt.Fprintf(w, "swap: unknown (%s)\n", reason)
+	}
 	if profile.FDSoftLimit > 0 || profile.FDMaxFiles > 0 {
 		fmt.Fprintf(w, "file descriptors: soft limit %d, hard limit %d, system max %d\n",
 			profile.FDSoftLimit, profile.FDHardLimit, profile.FDMaxFiles)

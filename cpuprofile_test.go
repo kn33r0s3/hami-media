@@ -18,13 +18,15 @@ import (
 // runs it during the profile window so the profile holds samples
 // from a named function of the test binary itself.
 func burnCPUForProfile(stop <-chan struct{}, counter *atomic.Uint64) {
+	var iterations uint64
 	for {
 		select {
 		case <-stop:
+			counter.Add(iterations)
 			return
 		default:
 		}
-		counter.Add(1)
+		iterations++
 	}
 }
 
@@ -34,11 +36,16 @@ func burnCPUForProfile(stop <-chan struct{}, counter *atomic.Uint64) {
 // companion JSON's binary sha equals the test binary's own sha.
 func TestWriteM7HCPUProfileSameBinarySymbols(t *testing.T) {
 	stop := make(chan struct{})
+	done := make(chan struct{})
 	var counter atomic.Uint64
-	go burnCPUForProfile(stop, &counter)
+	go func() {
+		defer close(done)
+		burnCPUForProfile(stop, &counter)
+	}()
 	path := filepath.Join(t.TempDir(), "cpu.pprof")
 	err := writeM7HCPUProfile(context.Background(), path, 100*time.Millisecond)
 	close(stop)
+	<-done
 	if err != nil {
 		t.Fatalf("writeM7HCPUProfile: %v", err)
 	}

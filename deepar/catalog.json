@@ -1,0 +1,148 @@
+{
+  "schemaVersion": 1,
+  "provider": "DeepAR",
+  "sdkVersion": "5.6.22",
+  "effectExtension": ".deepar",
+  "marketSignal": "Unvalidated concept shortlist; not an official trending or sales ranking.",
+  "effects": [
+    {
+      "id": "deepar-aviators",
+      "name": "Aviators (DeepAR sample)",
+      "category": "face-accessory",
+      "pilotPriority": "first-wave",
+      "asset": "https://cdn.jsdelivr.net/npm/deepar@5.6.22/effects/aviators",
+      "status": "official-docs-example",
+      "notes": "Requires a valid DeepAR Web license key. Confirm the sample effect's terms before commercial use."
+    },
+    {
+      "id": "natural-glow",
+      "name": "Natural Glow",
+      "category": "beauty",
+      "pilotPriority": "first-wave",
+      "asset": null,
+      "status": "asset-needed"
+    },
+    {
+      "id": "soft-glam",
+      "name": "Soft Glam Makeup",
+      "category": "makeup",
+      "pilotPriority": "first-wave",
+      "asset": null,
+      "status": "asset-needed"
+    },
+    {
+      "id": "sunglasses-try-on",
+      "name": "Sunglasses Try-On",
+      "category": "style-commerce",
+      "pilotPriority": "first-wave",
+      "asset": null,
+      "status": "asset-needed"
+    },
+    {
+      "id": "eyewear-try-on",
+      "name": "Everyday Eyewear Try-On",
+      "category": "style-commerce",
+      "pilotPriority": "first-wave",
+      "asset": null,
+      "status": "asset-needed"
+    },
+    {
+      "id": "jewelry-try-on",
+      "name": "Jewelry Try-On",
+      "category": "style-commerce",
+      "pilotPriority": "first-wave",
+      "asset": null,
+      "status": "asset-needed"
+    },
+    {
+      "id": "festival-glitter",
+      "name": "Festival Glitter",
+      "category": "events",
+      "pilotPriority": "first-wave",
+      "asset": null,
+      "status": "asset-needed"
+    },
+    {
+      "id": "seasonal-festive",
+      "name": "Seasonal Festive",
+      "category": "seasonal",
+      "pilotPriority": "first-wave",
+      "asset": null,
+      "status": "asset-needed"
+    },
+    {
+      "id": "face-paint",
+      "name": "Face Paint",
+      "category": "events",
+      "pilotPriority": "second-wave",
+      "asset": null,
+      "status": "asset-needed"
+    },
+    {
+      "id": "party-confetti",
+      "name": "Party Confetti",
+      "category": "events",
+      "pilotPriority": "second-wave",
+      "asset": null,
+      "status": "asset-needed"
+    },
+    {
+      "id": "animal-ears",
+      "name": "Animal Ears",
+      "category": "playful",
+      "pilotPriority": "second-wave",
+      "asset": null,
+      "status": "asset-needed"
+    },
+    {
+      "id": "fantasy-crown",
+      "name": "Fantasy Crown",
+      "category": "fantasy",
+      "pilotPriority": "second-wave",
+      "asset": null,
+      "status": "asset-needed"
+    },
+    {
+      "id": "retro-film",
+      "name": "Retro Film Look",
+      "category": "visual-style",
+      "pilotPriority": "second-wave",
+      "asset": null,
+      "status": "asset-needed"
+    },
+    {
+      "id": "cartoon-style",
+      "name": "Cartoon Style",
+      "category": "creative",
+      "pilotPriority": "second-wave",
+      "asset": null,
+      "status": "asset-needed"
+    },
+    {
+      "id": "background-scene",
+      "name": "Background Scene",
+      "category": "environment",
+      "pilotPriority": "second-wave",
+      "asset": null,
+      "status": "asset-needed"
+    },
+    {
+      "id": "sports-fan",
+      "name": "Sports Fan",
+      "category": "community",
+      "pilotPriority": "second-wave",
+      "asset": null,
+      "status": "asset-needed",
+      "notes": "Use only approved team or league marks."
+    },
+    {
+      "id": "brand-try-on",
+      "name": "Branded Product Try-On",
+      "category": "commerce",
+      "pilotPriority": "second-wave",
+      "asset": null,
+      "status": "asset-needed",
+      "notes": "Requires permission for product models and branding."
+    }
+  ]
+}

@@ -1,0 +1,50 @@
+<!doctype html>
+<html>
+<head><title>Codec Test</title></head>
+<body>
+<div id="result">Testing...</div>
+<pre id="sdp"></pre>
+<script>
+async function run() {
+  try {
+    const pc = new RTCPeerConnection();
+    const stream = await navigator.mediaDevices.getUserMedia({video: true, audio: true});
+    const videoTrack = stream.getVideoTracks()[0];
+    const transceiver = pc.addTransceiver(videoTrack, {direction: 'sendonly'});
+    
+    // Check caps
+    const caps = RTCRtpSender.getCapabilities('video');
+    const h264List = caps.codecs.filter(c => c.mimeType === 'video/H264' && c.sdpFmtpLine && c.sdpFmtpLine.includes('profile-level-id=42001f'));
+    
+    if (h264List.length > 0) {
+      transceiver.setCodecPreferences(h264List);
+    }
+    
+    const offer = await pc.createOffer();
+    document.getElementById('sdp').textContent = offer.sdp;
+    
+    // Check first video payload in SDP
+    const lines = offer.sdp.split('\r\n');
+    let mVideoIdx = lines.findIndex(l => l.startsWith('m=video'));
+    let mVideoLine = lines[mVideoIdx];
+    let firstPt = mVideoLine.split(' ')[3];
+    let rtpmap = lines.find(l => l.startsWith(`a=rtpmap:${firstPt} `));
+    let fmtp = lines.find(l => l.startsWith(`a=fmtp:${firstPt} `));
+    
+    window._testResult = {
+      h264_count: h264List.length,
+      first_pt: firstPt,
+      rtpmap: rtpmap,
+      fmtp: fmtp,
+      sdp: offer.sdp
+    };
+    document.getElementById('result').textContent = 'DONE';
+  } catch (err) {
+    window._testResult = { error: err.toString() };
+    document.getElementById('result').textContent = 'ERROR: ' + err;
+  }
+}
+run();
+</script>
+</body>
+</html>

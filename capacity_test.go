@@ -20,6 +20,7 @@ func referenceDeviceProfile() deviceProfile {
 		SwapUsedMiB:        0,
 		SwapFreeMiB:        4096,
 		SwapTotalMiB:       4096,
+		SwapKnown:          true,
 		FDSoftLimit:        256,
 		FDHardLimit:        10240,
 		FDMaxFiles:         524288,
@@ -29,6 +30,17 @@ func referenceDeviceProfile() deviceProfile {
 			{Name: "en0", MTU: 1500, Up: true, Addresses: []string{"192.168.1.2"}},
 		},
 	}
+}
+
+func useCapacityTestSwapReading(t *testing.T) {
+	t.Helper()
+	original := swapUsageReader
+	swapUsageReader = func() (float64, float64, error) {
+		return 128, 896, nil
+	}
+	t.Cleanup(func() {
+		swapUsageReader = original
+	})
 }
 
 func TestDeriveCapacityLimitsReferenceDevice(t *testing.T) {
@@ -212,6 +224,39 @@ func TestResolveCapacityLimitsExplicitZeroMeansUnlimited(t *testing.T) {
 	}
 }
 
+func TestResolveCapacityLimitsDetectionFailureUsesSafeStarter(t *testing.T) {
+	limits, notes, err := resolveCapacityLimitsWithDetectionFailure(true, false, 0, false, 0)
+	if err != nil {
+		t.Fatalf("resolveCapacityLimitsWithDetectionFailure(): %v", err)
+	}
+	if limits.MaxPublishers != 1 || limits.MaxSubscribers != 1 {
+		t.Fatalf("detection-failure limits = %d / %d, want safe starter 1 / 1",
+			limits.MaxPublishers, limits.MaxSubscribers)
+	}
+	if limits.ScaleFactor != 0 || limits.AutoDetected {
+		t.Fatalf("detection-failure metadata = scale %g, auto %t; want unmeasured zero scale and not auto-detected",
+			limits.ScaleFactor, limits.AutoDetected)
+	}
+	if !strings.Contains(strings.Join(notes, "\n"), "not a capacity measurement") {
+		t.Fatalf("detection-failure notes = %q, want an explicit non-measurement warning", strings.Join(notes, "\n"))
+	}
+
+	limits, notes, err = resolveCapacityLimitsWithDetectionFailure(true, true, 3, true, 200)
+	if err != nil {
+		t.Fatalf("resolveCapacityLimitsWithDetectionFailure(explicit overrides): %v", err)
+	}
+	if limits.MaxPublishers != 3 || limits.MaxSubscribers != 200 {
+		t.Fatalf("explicit detection-failure limits = %d / %d, want 3 / 200",
+			limits.MaxPublishers, limits.MaxSubscribers)
+	}
+	if !strings.Contains(strings.Join(notes, "\n"), "overrides the safe starter limit") {
+		t.Fatalf("explicit detection-failure notes = %q, want override notes", strings.Join(notes, "\n"))
+	}
+	if _, _, err := resolveCapacityLimitsWithDetectionFailure(true, true, -1, false, 0); err == nil {
+		t.Fatal("negative explicit publisher limit after detection failure: got no error, want one")
+	}
+}
+
 func TestWriteCapacityReportReferenceDevice(t *testing.T) {
 	profile := referenceDeviceProfile()
 	limits, err := deriveCapacityLimits(profile)
@@ -272,6 +317,7 @@ func TestDetectDeviceProfileReturnsPlausibleValues(t *testing.T) {
 		}
 		return
 	}
+	useCapacityTestSwapReading(t)
 	profile, err := detectDeviceProfile()
 	if err != nil {
 		t.Fatalf("detectDeviceProfile(): %v", err)
@@ -294,12 +340,56 @@ func TestDetectDeviceProfileReturnsPlausibleValues(t *testing.T) {
 	if len(profile.NICs) == 0 {
 		t.Fatal("detected no network interfaces, want at least one")
 	}
+	if !profile.SwapKnown {
+		t.Fatalf("detected swap is unknown: %s", profile.SwapReadError)
+	}
+}
+
+func TestDetectDeviceProfileKeepsCPUAndRAMWhenSwapIsUnknown(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("device profile detection is not supported on windows")
+	}
+	original := swapUsageReader
+	swapUsageReader = func() (float64, float64, error) {
+		return 0, 0, nil
+	}
+	t.Cleanup(func() {
+		swapUsageReader = original
+	})
+
+	profile, err := detectDeviceProfile()
+	if err != nil {
+		t.Fatalf("detectDeviceProfile() with unknown swap: %v", err)
+	}
+	if profile.CPUCores <= 0 || profile.RAMTotalMiB == 0 {
+		t.Fatalf("CPU/RAM missing despite unknown swap: cores=%d RAM=%d MiB",
+			profile.CPUCores, profile.RAMTotalMiB)
+	}
+	if profile.SwapKnown || profile.SwapReadError == "" {
+		t.Fatalf("swap status = known %t, error %q; want unknown with the reader error",
+			profile.SwapKnown, profile.SwapReadError)
+	}
+	limits, err := deriveCapacityLimits(profile)
+	if err != nil {
+		t.Fatalf("deriveCapacityLimits() with unknown swap: %v", err)
+	}
+	notes := strings.Join(deriveCapacityNotes(profile, limits), "\n")
+	if !strings.Contains(notes, "swap usage is unknown") || !strings.Contains(notes, "scale-proof preflight still refuses unknown swap") {
+		t.Fatalf("unknown-swap capacity notes = %q, want warning and fail-closed preflight note", notes)
+	}
+
+	var report bytes.Buffer
+	writeCapacityReport(&report, profile, limits, deriveCapacityNotes(profile, limits))
+	if !strings.Contains(report.String(), "swap: unknown (") {
+		t.Fatalf("unknown-swap report does not disclose unavailable reading:\n%s", report.String())
+	}
 }
 
 func TestRunCapacityCommandPrintsReport(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("capacity detection is not supported on windows")
 	}
+	useCapacityTestSwapReading(t)
 	var buf bytes.Buffer
 	if err := runCapacityCommand(&buf); err != nil {
 		t.Fatalf("runCapacityCommand(): %v", err)

@@ -301,7 +301,7 @@ var m7hHeapProfilePath = flag.String(
 var maxHeapBytes = flag.Uint64(
 	"max-heap-bytes",
 	0,
-	"cancel a local proof when Go HeapAlloc reaches this byte limit; 0 disables (not a total RSS limit)",
+	"stop a local proof or M7-H service when Go HeapAlloc reaches this byte limit; 0 disables the budget guard (not a total RSS limit)",
 )
 
 var m7hGoroutineProfilePath = flag.String(
@@ -986,7 +986,7 @@ func main() {
 		}
 		return
 	}
-	mode := flag.String("mode", "pair", "mode: pair, sfu, sfu-single, sfu-cascade, turn-server, or mint-token")
+	mode := flag.String("mode", "pair", "mode: pair, sfu, sfu-single, sfu-cascade, turn-server, mint-token, or serve")
 	dev := flag.Bool("dev", false, "enable internal proof and server modes")
 	videoPath := flag.String("video-file", "", "local Annex-B H.264 source file")
 	duration := flag.Duration("duration", 3*time.Second, "local media send duration")
@@ -998,6 +998,8 @@ func main() {
 		1,
 		"viewer count per publisher for sfu-single mode (1-500; total viewers capped at 10000)",
 	)
+	// Part 4: standalone serve flags for -mode=serve.
+	serveListen := flag.String("serve-listen", "127.0.0.1:8080", "listen address for -mode=serve")
 	// FIX 25: cell-sharded capacity run (see runLocalSFUCellShardedProof).
 	// N worker subprocesses, each a complete single-process room for
 	// publishers/N tracks. 1 = the historical single-process run.
@@ -1158,9 +1160,9 @@ func main() {
 	// already honours GOMEMLIMIT when set (run 133 used the env var);
 	// this only supplies the same 4 GiB default when the env is unset,
 	// so a bare invocation cannot run unbounded.
-	if os.Getenv("GOMEMLIMIT") == "" {
-		debug.SetMemoryLimit(4_000_000_000)
-		fmt.Fprintf(os.Stderr, "heap memory limit: hardened to 4000000000 bytes (no GOMEMLIMIT env)\n")
+	if os.Getenv("GOMEMLIMIT") == "" && *mode != "m7h-sfu" {
+		debug.SetMemoryLimit(int64(defaultGoMemoryLimitBytes))
+		fmt.Fprintf(os.Stderr, "heap memory limit: hardened to %d bytes (no GOMEMLIMIT env)\n", defaultGoMemoryLimitBytes)
 	}
 	if *mode == "m7h-sfu" {
 		// POLISH-001: the harness passes the bearer token on fd 4
@@ -1175,15 +1177,10 @@ func main() {
 			}
 			token = fdToken
 		}
-		if err := checkGoHeapBudget(*maxHeapBytes); err != nil {
-			fail("start local M7-H SFU process: %v", err)
-		}
 		// Capacity: resolve the serve limits before the server
 		// starts, and log the chosen values. A detection failure
-		// falls back to the highest measured anchors with a loud
-		// warning — a sysctl hiccup must not kill serving — but an
-		// explicit negative flag is a hard error (see
-		// resolveCapacityLimits).
+		// uses a conservative starter limit rather than assuming a
+		// high-end device. Explicit negative flags remain errors.
 		capacityProfile, capacityErr := detectDeviceProfile()
 		capacityCPUModel := "unknown"
 		capacityCores := 0
@@ -1191,13 +1188,21 @@ func main() {
 		var capacityLimitsResolved capacityLimits
 		var capacityNotes []string
 		if capacityErr != nil {
-			capacityLimitsResolved = capacityLimits{
-				MaxPublishers:  capacityAnchorMaxPublishers(),
-				MaxSubscribers: capacityAnchorMaxViewers(),
-				ScaleFactor:    1,
-				AutoDetected:   false,
+			var resolveErr error
+			capacityLimitsResolved, capacityNotes, resolveErr = resolveCapacityLimitsWithDetectionFailure(
+				*autoCapacity,
+				maxPublishersExplicit,
+				*maxPublishers,
+				maxSubscribersExplicit,
+				*maxSubscribers,
+			)
+			if resolveErr != nil {
+				fail("resolve capacity limits after device detection failure: %v", resolveErr)
 			}
-			capacityNotes = []string{fmt.Sprintf("WARNING: device detection failed (%v); using the highest measured anchors", capacityErr)}
+			capacityNotes = append(
+				[]string{fmt.Sprintf("WARNING: device detection failed (%v)", capacityErr)},
+				capacityNotes...,
+			)
 		} else {
 			capacityCPUModel = capacityProfile.CPUModel
 			capacityCores = capacityProfile.CPUCores
@@ -1207,6 +1212,18 @@ func main() {
 			if resolveErr != nil {
 				fail("resolve capacity limits: %v", resolveErr)
 			}
+		}
+		if !maxHeapBytesExplicit {
+			*maxHeapBytes = defaultM7HHeapBudget(capacityLimitsResolved.MaxSubscribers)
+			fmt.Fprintf(os.Stderr, "m7h-sfu default heap budget: maxHeapBytes=%d\n", *maxHeapBytes)
+		}
+		if os.Getenv("GOMEMLIMIT") == "" {
+			memoryLimit := m7HGoMemoryLimit(*maxHeapBytes)
+			debug.SetMemoryLimit(int64(memoryLimit))
+			fmt.Fprintf(os.Stderr, "heap memory limit: set to %d bytes (no GOMEMLIMIT env)\n", memoryLimit)
+		}
+		if err := checkGoHeapBudget(*maxHeapBytes); err != nil {
+			fail("start local M7-H SFU process: %v", err)
 		}
 		fmt.Fprintf(os.Stderr, "capacity: auto=%t maxPublishers=%s maxSubscribers=%s scaleFactor=%.2f cpu=%s cores=%d ramGiB=%.1f\n",
 			*autoCapacity, capacityLimitString(capacityLimitsResolved.MaxPublishers), capacityLimitString(capacityLimitsResolved.MaxSubscribers), capacityLimitsResolved.ScaleFactor, capacityCPUModel, capacityCores, capacityRAMGiB)
@@ -1231,6 +1248,13 @@ func main() {
 	if *mode == "turn-server" {
 		if err := runTURNServer(*turnListen); err != nil {
 			fail("run TURN server: %v", err)
+		}
+		return
+	}
+	// Part 4: run the browser-facing SFU server for streamers and viewers.
+	if *mode == "serve" {
+		if err := runServeMode(*serveListen); err != nil {
+			fail("serve: %v", err)
 		}
 		return
 	}
@@ -1660,11 +1684,31 @@ func defaultSFUHeapBudgetForViewers(viewerCount int) uint64 {
 		minimumHeapBudgetBytes      = 256 << 20
 	)
 	viewers := uint64(viewerCount)
-	budget := viewers * estimatedHeapBytesPerViewer * budgetMultiplier
+	bytesPerViewer := uint64(estimatedHeapBytesPerViewer) * uint64(budgetMultiplier)
+	if viewers > ^uint64(0)/bytesPerViewer {
+		return ^uint64(0)
+	}
+	budget := viewers * bytesPerViewer
 	if budget < minimumHeapBudgetBytes {
 		return minimumHeapBudgetBytes
 	}
 	return budget
+}
+
+const defaultGoMemoryLimitBytes uint64 = 4_000_000_000
+
+func defaultM7HHeapBudget(maxSubscribers int) uint64 {
+	if maxSubscribers < 1 {
+		maxSubscribers = capacityAnchorMaxViewers()
+	}
+	return defaultSFUHeapBudgetForViewers(maxSubscribers)
+}
+
+func m7HGoMemoryLimit(maxHeapBytes uint64) uint64 {
+	if maxHeapBytes > 0 && maxHeapBytes < defaultGoMemoryLimitBytes {
+		return maxHeapBytes
+	}
+	return defaultGoMemoryLimitBytes
 }
 
 func logHeapBudgetSample(phase string, maxHeapBytes uint64, memory runtime.MemStats) {
@@ -1686,11 +1730,11 @@ func fail(format string, args ...any) {
 	os.Exit(1)
 }
 
-const publicModeList = "pair, sfu, sfu-single, sfu-cascade, turn-server, or mint-token"
+const publicModeList = "pair, sfu, sfu-single, sfu-cascade, turn-server, mint-token, or serve"
 
 func validateMode(mode string, dev bool) error {
 	switch mode {
-	case "pair", "sfu", "sfu-single", "sfu-cascade", "turn-server", "mint-token":
+	case "pair", "sfu", "sfu-single", "sfu-cascade", "turn-server", "mint-token", "serve":
 		return nil
 	case "m7h-sfu", "m1h", "m2h", "m3h", "m4h", "m5h", "m6h", "m7h", "m9h", "audio-rung1":
 		if dev {
@@ -5616,6 +5660,7 @@ type upstreamFeedback struct {
 type sfuPublishedTrack struct {
 	key           sfuTrackKey
 	remote        *webrtc.TrackRemote
+	kind          string
 	publisherPeer *webrtc.PeerConnection
 	subscribers   map[string]*sfuSubscription
 	// subscribersVersion bumps on every subscribe/unsubscribe so
@@ -6470,6 +6515,15 @@ func (r *sfuRouter) registerTrack(publisherID string, remote *webrtc.TrackRemote
 	if remote == nil {
 		return errors.New("publisher track is required")
 	}
+	kind := ""
+	switch remote.Kind() {
+	case webrtc.RTPCodecTypeAudio:
+		kind = "audio"
+	case webrtc.RTPCodecTypeVideo:
+		kind = "video"
+	default:
+		return errors.New("publisher track kind must be audio or video")
+	}
 	// Job 2.6: the layer is the remote track's RID. Simulcast layers
 	// share one track ID and differ only by RID, so the key must
 	// carry it or the second layer collides with the first.
@@ -6483,6 +6537,7 @@ func (r *sfuRouter) registerTrack(publisherID string, remote *webrtc.TrackRemote
 	track := &sfuPublishedTrack{
 		key:             key,
 		remote:          remote,
+		kind:            kind,
 		subscribers:     make(map[string]*sfuSubscription),
 		m7hReceiveStats: m7hReceiveStats,
 		firstFrameReady: make(chan struct{}),
@@ -6874,11 +6929,19 @@ type m7hRemoteSDPRequest struct {
 
 type m7hRemoteViewerRequest struct {
 	ViewerID                string      `json:"viewer_id"`
+	SubscriberID            string      `json:"subscriber_id,omitempty"`
 	Key                     sfuTrackKey `json:"key"`
 	Offer                   string      `json:"offer"`
 	CheckUnauthorizedAccess bool        `json:"check_unauthorized_access"`
 	// Part 3: HMAC token granting the subscribe role in the SFU room.
 	Token string `json:"token,omitempty"`
+}
+
+func (request m7hRemoteViewerRequest) subscriberID() string {
+	if id := strings.TrimSpace(request.SubscriberID); id != "" {
+		return id
+	}
+	return strings.TrimSpace(request.ViewerID)
 }
 
 type m7hRemoteSDPResponse struct {
@@ -8440,18 +8503,7 @@ func runM7HSFUServer(token string, heapBudgetBytes uint64, limits capacityLimits
 	defer stopRuntimeProbe()
 	stopPublisherReceiveSampler := startM7HPublisherReceiveSampler(server)
 	defer stopPublisherReceiveSampler()
-	mux := http.NewServeMux()
-	mux.HandleFunc("/health", server.handleHealth(token))
-	mux.HandleFunc("/publisher", server.handlePublisher(token))
-	mux.HandleFunc("/publisher/ready", server.handlePublisherReady(token))
-	mux.HandleFunc("/viewer", server.handleViewer(token))
-	mux.HandleFunc("/stats", server.handleStats(token))
-	mux.HandleFunc("/receive-stats", server.handleReceiveStats(token))
-	mux.HandleFunc("/heap-profile", server.handleHeapProfile(token))
-	mux.HandleFunc("/goroutine-profile", server.handleGoroutineProfile(token))
-	mux.HandleFunc("/cpu-profile", server.handleCPUProfile(token))
-	mux.HandleFunc("/cleanup", server.handleCleanup(token))
-	mux.HandleFunc("/shutdown", server.handleShutdown(token))
+	mux := newM7HSFUMux(server, token, m7hSFURouteOverrides{})
 	server.httpServer = &http.Server{
 		Handler:           mux,
 		ReadHeaderTimeout: 10 * time.Second,
@@ -8735,8 +8787,9 @@ func (server *m7hRemoteSFUServer) handleViewer(token string) http.HandlerFunc {
 			writeM7HJSONError(w, http.StatusBadRequest, err)
 			return
 		}
-		viewerID = request.ViewerID
-		if request.ViewerID == "" || request.Key.PublisherID == "" ||
+		subscriberID := request.subscriberID()
+		viewerID = subscriberID
+		if strings.TrimSpace(request.ViewerID) == "" || subscriberID == "" || request.Key.PublisherID == "" ||
 			request.Key.TrackID == "" || request.Offer == "" {
 			writeM7HJSONError(w, http.StatusBadRequest, errors.New("viewer, track identity, and SDP offer are required"))
 			return
@@ -8770,7 +8823,7 @@ func (server *m7hRemoteSFUServer) handleViewer(token string) http.HandlerFunc {
 				settings.SetICEUDPMux(socketMux)
 				routerPeerAPI = webrtc.NewAPI(webrtc.WithSettingEngine(settings))
 				routerSocketConn = socketMux.conn
-				routerSocketConn.role = fmt.Sprintf("router-shard-%d:%s", publisher.shard, request.ViewerID)
+				routerSocketConn.role = fmt.Sprintf("router-shard-%d:%s", publisher.shard, subscriberID)
 			} else {
 				socketMux, err := newSinglePeerUDPMux()
 				if err != nil {
@@ -8786,59 +8839,59 @@ func (server *m7hRemoteSFUServer) handleViewer(token string) http.HandlerFunc {
 				settings.SetICEUDPMux(socketMux)
 				routerPeerAPI = webrtc.NewAPI(webrtc.WithSettingEngine(settings))
 				routerSocketConn = socketMux.conn
-				routerSocketConn.role = "router-single:" + request.ViewerID
+				routerSocketConn.role = "router-single:" + subscriberID
 				server.mu.Lock()
 				server.muxes = append(server.muxes, socketMux)
 				server.mu.Unlock()
 			}
-			routerSocketConn.pcKey = "router-serverPeer:" + request.ViewerID
+			routerSocketConn.pcKey = "router-serverPeer:" + subscriberID
 		}
 		serverPeer, err := routerPeerAPI.NewPeerConnection(webrtc.Configuration{})
 		if err != nil {
 			writeM7HJSONError(w, http.StatusInternalServerError, err)
 			return
 		}
-		attachPCStateLogging(serverPeer, "router-serverPeer", request.ViewerID)
+		attachPCStateLogging(serverPeer, "router-serverPeer", subscriberID)
 		setPhase("register-subscribe")
-		if err := server.router.registerViewer(request.ViewerID, serverPeer); err != nil {
+		if err := server.router.registerViewer(subscriberID, serverPeer); err != nil {
 			_ = serverPeer.Close()
 			writeM7HJSONError(w, http.StatusConflict, err)
 			return
 		}
 		unauthorizedDenied := false
 		if request.CheckUnauthorizedAccess {
-			if err := server.router.subscribe(request.ViewerID, request.Key); !errors.Is(err, errSFUUnauthorized) {
-				_ = server.router.removeViewer(request.ViewerID)
+			if err := server.router.subscribe(subscriberID, request.Key); !errors.Is(err, errSFUUnauthorized) {
+				_ = server.router.removeViewer(subscriberID)
 				writeM7HJSONError(w, http.StatusInternalServerError,
 					fmt.Errorf("unauthorized subscription was not denied: %v", err))
 				return
 			}
 			unauthorizedDenied = true
 		}
-		if err := server.router.authorizeSubscription(request.ViewerID, request.Key); err != nil {
-			_ = server.router.removeViewer(request.ViewerID)
+		if err := server.router.authorizeSubscription(subscriberID, request.Key); err != nil {
+			_ = server.router.removeViewer(subscriberID)
 			writeM7HJSONError(w, http.StatusInternalServerError, err)
 			return
 		}
-		if err := server.router.subscribe(request.ViewerID, request.Key); err != nil {
-			_ = server.router.removeViewer(request.ViewerID)
+		if err := server.router.subscribe(subscriberID, request.Key); err != nil {
+			_ = server.router.removeViewer(subscriberID)
 			writeM7HJSONError(w, http.StatusInternalServerError, err)
 			return
 		}
 		setPhase("answer-gather")
 		answer, err := answerM7HRemoteOffer(r.Context(), serverPeer, request.Offer)
 		if err != nil {
-			_ = server.router.unsubscribe(request.ViewerID, request.Key)
-			_ = server.router.removeViewer(request.ViewerID)
+			_ = server.router.unsubscribe(subscriberID, request.Key)
+			_ = server.router.removeViewer(subscriberID)
 			writeM7HJSONError(w, http.StatusBadRequest, err)
 			return
 		}
 		server.mu.Lock()
-		if _, exists := server.viewers[request.ViewerID]; exists {
+		if _, exists := server.viewers[subscriberID]; exists {
 			server.mu.Unlock()
-			_ = server.router.unsubscribe(request.ViewerID, request.Key)
-			_ = server.router.removeViewer(request.ViewerID)
-			writeM7HJSONError(w, http.StatusConflict, fmt.Errorf("viewer %q already exists", request.ViewerID))
+			_ = server.router.unsubscribe(subscriberID, request.Key)
+			_ = server.router.removeViewer(subscriberID)
+			writeM7HJSONError(w, http.StatusConflict, fmt.Errorf("viewer %q already exists", subscriberID))
 			return
 		}
 		// Capacity: refuse a new viewer past the limit (0 =
@@ -8847,13 +8900,13 @@ func (server *m7hRemoteSFUServer) handleViewer(token string) http.HandlerFunc {
 		// already-exists branch.
 		if server.subscriberLimitReached() {
 			server.mu.Unlock()
-			_ = server.router.unsubscribe(request.ViewerID, request.Key)
-			_ = server.router.removeViewer(request.ViewerID)
+			_ = server.router.unsubscribe(subscriberID, request.Key)
+			_ = server.router.removeViewer(subscriberID)
 			writeM7HJSONError(w, http.StatusServiceUnavailable, fmt.Errorf("subscriber limit reached: max %d subscribers", server.maxSubscribers))
 			return
 		}
-		server.viewers[request.ViewerID] = viewerEndpoint{
-			id:               request.ViewerID,
+		server.viewers[subscriberID] = viewerEndpoint{
+			id:               subscriberID,
 			key:              request.Key,
 			routerSocketConn: routerSocketConn,
 		}

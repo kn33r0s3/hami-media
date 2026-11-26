@@ -1426,6 +1426,27 @@ func TestDefaultSFUHeapBudgetUsesViewerEstimateWithSmallRunFloor(t *testing.T) {
 	}
 }
 
+func TestDefaultM7HHeapBudgetTracksViewerLimit(t *testing.T) {
+	if got, want := defaultM7HHeapBudget(1000), uint64(1_000_000_000); got != want {
+		t.Fatalf("1,000-viewer M7-H heap budget = %d, want %d", got, want)
+	}
+	if got, want := defaultM7HHeapBudget(1), uint64(256<<20); got != want {
+		t.Fatalf("1-viewer M7-H heap budget = %d, want minimum %d", got, want)
+	}
+	if got, want := defaultM7HHeapBudget(0), uint64(7_500_000_000); got != want {
+		t.Fatalf("unlimited-viewer M7-H heap budget = %d, want anchor-sized fallback %d", got, want)
+	}
+	if got, want := m7HGoMemoryLimit(1_000_000_000), uint64(1_000_000_000); got != want {
+		t.Fatalf("small M7-H Go memory limit = %d, want to track heap budget %d", got, want)
+	}
+	if got, want := m7HGoMemoryLimit(8_000_000_000), defaultGoMemoryLimitBytes; got != want {
+		t.Fatalf("large M7-H Go memory limit = %d, want default %d", got, want)
+	}
+	if got, want := m7HGoMemoryLimit(0), defaultGoMemoryLimitBytes; got != want {
+		t.Fatalf("disabled-guard M7-H Go memory limit = %d, want default %d", got, want)
+	}
+}
+
 func TestCachedPacketsSharePayloadAndCopyMutableHeader(t *testing.T) {
 	stored := &rtp.Packet{
 		Header: rtp.Header{
@@ -2293,8 +2314,22 @@ func TestM7HPublisherSendStallRequiresActiveSendContext(t *testing.T) {
 	}
 }
 
+func m7hProfileTestPath(t *testing.T, name string) string {
+	t.Helper()
+	dir, err := os.MkdirTemp(os.TempDir(), "hami-m7h-profile-test-")
+	if err != nil {
+		t.Fatalf("create profile test directory: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := os.RemoveAll(dir); err != nil {
+			t.Errorf("remove profile test directory: %v", err)
+		}
+	})
+	return filepath.Join(dir, name)
+}
+
 func TestM7HRemoteSFUGoroutineProfileWritesLocalFile(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "goroutine.pprof")
+	path := m7hProfileTestPath(t, "goroutine.pprof")
 	request := httptest.NewRequest(http.MethodGet, "/goroutine-profile", nil)
 	request.Header.Set("Authorization", "Bearer test-token")
 	request.Header.Set("X-M7H-Goroutine-Profile-Path", path)
@@ -2331,7 +2366,7 @@ func TestM7HRemoteSFUGoroutineProfileRejectsNonTemporaryPath(t *testing.T) {
 }
 
 func TestM7HRemoteSFUCPUProfileWritesPrivateLocalFile(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "cpu.pprof")
+	path := m7hProfileTestPath(t, "cpu.pprof")
 	request := httptest.NewRequest(http.MethodGet, "/cpu-profile", nil)
 	request.Header.Set("Authorization", "Bearer test-token")
 	request.Header.Set("X-M7H-CPU-Profile-Path", path)

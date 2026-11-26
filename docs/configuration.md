@@ -48,9 +48,10 @@ The server process is started by the harness, not by hand. It inherits its liste
 
 | Flag | Default | Meaning |
 |---|---|---|
-| `-auto-capacity` | true | Detect the device at startup and use it for the default limits. `false` uses the highest measured anchor instead. |
+| `-auto-capacity` | true | Detect the device at startup and use it for the default limits. If CPU/RAM detection fails, use a 1-publisher / 1-viewer starter cap rather than assuming a high-end machine. `false` uses the highest measured anchor instead. |
 | `-max-publishers` | 0 | Maximum concurrent publishers. 0 means use the auto-detected limit. An explicit number is never lowered. An explicit 0 means unlimited. |
 | `-max-subscribers` | 0 | Maximum concurrent viewers. Same rules as `-max-publishers`. |
+| `-max-heap-bytes` | derived | M7-H service mode derives a heap guard from its viewer limit. An explicit value overrides it; 0 disables the heap guard. |
 
 Check the detector's answer without starting a server: `./hami-media capacity`. It prints the device, the recommended limits, the scale factor, and the anchors. It takes no arguments.
 
@@ -83,7 +84,7 @@ Check the detector's answer without starting a server: `./hami-media capacity`. 
 | `HAMI_SFU_TURN_REALM` | TURN realm. Default `hami`. |
 | `HAMI_SFU_TURN_LISTEN` | Where `-mode turn-server` listens. Default `127.0.0.1:3478`. |
 | `HAMI_SFU_EGRESS_SHARDS` | Egress shard count, 0–32. 0 is the default. |
-| `GOMEMLIMIT` | Go heap limit. If unset, the binary sets a 4 GiB default. |
+| `GOMEMLIMIT` | Go heap limit. If unset, the binary sets a 4 GiB default; M7-H service mode lowers it to the derived heap budget when that budget is smaller. |
 | `GOGC` | Go GC target percentage. Default 100. Lower values collect more often (less heap, more CPU); aggressive values cost frames — GOGC 20 lost frames on 3 of 20 tracks at 20 x 8,000, GOGC 50 lost frames on 1 track, default lost none. |
 | `HAMI_HEAP_PROFILE_PATH` | Write a heap profile when heap use passes `HAMI_HEAP_PROFILE_AT_BYTES` (default 512 MiB). |
 | `HAMI_CPU_PROFILE_PATH` | Write a CPU profile, starting after `HAMI_CPU_PROFILE_DELAY` (default 90 s) for `HAMI_CPU_PROFILE_WINDOW`. |
@@ -93,7 +94,7 @@ The HMAC key must be at least 32 characters. The server refuses to start without
 
 ## Heap and memory
 
-- The binary sets a 4 GiB Go heap limit when `GOMEMLIMIT` is unset. A bare run cannot grow without limit.
-- `-mode sfu-single` and `-mode m9h` pick a heap budget from the viewer count unless you pass `-max-heap-bytes`. The run stops cleanly when the budget is hit.
+- The binary sets a 4 GiB Go heap limit when `GOMEMLIMIT` is unset. M7-H service mode lowers that target to its viewer-based heap budget when smaller. A bare run cannot grow without limit.
+- `-mode sfu-single` and `-mode m9h` pick a heap budget from the viewer count unless you pass `-max-heap-bytes`. M7-H SFU service mode also derives a default heap budget from its effective viewer limit. These are protective estimates, not measured low-end capacity guarantees. The process stops cleanly when the heap budget is hit.
 - The host health check wants used swap at most 512 MiB when the machine holds a swap pool, or 8 GiB of free memory when it has no swap pool at all (as after a reboot), and 10 GiB of free disk. See [capacity.md](capacity.md). One edge case is open: a swap total reading 0 twice is treated as unknown and fails closed (never healthy), so no-swap protection is unverified in that edge case until the zero-reading glitch is identified.
 - Tuned configs measured at 20 x 8,000 (strict): the default env (GOMEMLIMIT 10 GiB, default GC) passed 3 times at p99 24–26 ms, peak RSS 4.69–5.67 GiB; GOMEMLIMIT 6 GiB + GOGC 50 passed once at p99 24.39 ms, peak RSS 5.115 GiB. Run-to-run RSS spread is ~1 GiB, so neither config is proven better on memory — the default env wins on frame-cleanliness (2/2 strict passes with zero short frames). See REPORT.md §4.5.

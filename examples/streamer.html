@@ -1,0 +1,652 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Hami Streamer</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  body { font-family: system-ui, -apple-system, sans-serif; max-width: 900px; margin: 2rem auto; padding: 0 1rem; background: #fdfdfd; color: #222; }
+  h1 { font-size: 1.5rem; margin-bottom: 0.5rem; }
+  .controls { display: flex; flex-wrap: wrap; gap: 0.5rem; margin: 1rem 0; align-items: center; }
+  button { padding: 0.5rem 1rem; font-size: 0.95rem; border: 1px solid #ccc; border-radius: 4px; background: #eee; cursor: pointer; font-weight: 500; }
+  button:hover:not(:disabled) { background: #ddd; }
+  button:disabled { opacity: 0.5; cursor: not-allowed; }
+  button.active { background: #0066cc; color: #fff; border-color: #0055aa; }
+  input { padding: 0.4rem 0.6rem; font-size: 0.95rem; border: 1px solid #ccc; border-radius: 4px; }
+  select { padding: 0.4rem 0.6rem; font-size: 0.95rem; border: 1px solid #ccc; border-radius: 4px; }
+  .filter-note { flex-basis: 100%; color: #555; font-size: 0.85rem; }
+  .video-container { width: 100%; aspect-ratio: 16/9; background: #111; border-radius: 8px; overflow: hidden; position: relative; margin-top: 1rem; }
+  video { width: 100%; height: 100%; object-fit: cover; }
+  #status-bar { padding: 0.5rem; background: #eee; border-radius: 4px; font-size: 0.85rem; margin-top: 0.5rem; font-family: monospace; }
+  .chat-box { margin-top: 1.5rem; border: 1px solid #ddd; border-radius: 6px; padding: 1rem; background: #fafafa; }
+  .chat-messages { height: 150px; overflow-y: auto; background: #fff; border: 1px solid #eee; padding: 0.5rem; margin-bottom: 0.5rem; font-size: 0.9rem; }
+  .chat-input { display: flex; gap: 0.5rem; }
+  .chat-input input { flex: 1; }
+</style>
+</head>
+<body>
+
+<h1>Hami Browser Streamer</h1>
+
+<div class="controls">
+  <input id="server" value="" placeholder="Server URL" size="24">
+  <input id="room" value="demo" placeholder="Room" size="10">
+  <input id="streamer-id" value="streamer-1" placeholder="Streamer ID" size="12">
+  <input id="display-name" value="Streamer One" placeholder="Display Name" size="14">
+  <input id="token" type="password" autocomplete="off" placeholder="Publish Token" size="30">
+</div>
+
+<div class="controls">
+  <button id="btn-live">Go Live</button>
+  <button id="btn-stop-live" disabled>Stop Going Live</button>
+  <button id="btn-mic" disabled>Mute Mic</button>
+  <button id="btn-cam" disabled>Mute Cam</button>
+  <button id="btn-screen" disabled>Share Screen</button>
+  <button id="btn-leave" disabled>Leave Room</button>
+</div>
+
+<div class="controls">
+  <label for="live-filter">Live filter</label>
+  <select id="live-filter">
+    <option value="none">None</option>
+    <optgroup label="Quick color looks">
+      <option value="natural">Natural glow</option>
+      <option value="warm">Warm</option>
+      <option value="cool">Cool</option>
+      <option value="vivid">Vivid</option>
+      <option value="soft">Soft</option>
+      <option value="mono">Monochrome</option>
+      <option value="sepia">Sepia</option>
+      <option value="vintage">Vintage</option>
+    </optgroup>
+    <optgroup label="DeepAR effects">
+      <option value="deepar-aviators">Aviators (DeepAR sample)</option>
+    </optgroup>
+  </select>
+  <input id="deepar-license" type="password" autocomplete="off" placeholder="DeepAR Web license key (not saved)" size="34">
+  <span class="filter-note" id="filter-note">
+    Color looks work without DeepAR. The DeepAR sample loads its SDK/effect on demand; enter a key for this domain. <a href="https://developer.deepar.ai/projects" target="_blank" rel="noopener noreferrer">Get a free test key</a>.
+  </span>
+</div>
+
+<div class="video-container">
+  <video id="preview" autoplay muted playsinline></video>
+</div>
+
+<div id="status-bar">Status: Idle</div>
+
+<div class="chat-box">
+  <h3>Room Chat</h3>
+  <div id="chat-messages" class="chat-messages"></div>
+  <div class="chat-input">
+    <input id="chat-text" placeholder="Type a message (max 300 chars)..." maxlength="300">
+    <button id="btn-chat-send" disabled>Send</button>
+  </div>
+</div>
+
+<script src="/sdk/web/hami.js?v=0.3.1"></script>
+<script>
+const $ = id => document.getElementById(id);
+if (!$('server').value) {
+  $('server').value = window.location.origin;
+}
+
+let client = null;
+let localStream = null;
+let sessionToken = '';
+let micMuted = false;
+let camMuted = false;
+let isScreenSharing = false;
+let activeFilter = $('live-filter').value;
+let filterSourceVideo = null;
+let filterCanvas = null;
+let filterContext = null;
+let filterCaptureStream = null;
+let filterVideoTrack = null;
+let filterTimer = null;
+let filterRenderPreset = 'natural';
+let deepARInstance = null;
+let deepARSourceVideo = null;
+let deepARCanvasStream = null;
+let deepARVideoTrack = null;
+let deepAREffectID = null;
+let deepARLoader = null;
+let originalCameraConstraints = null;
+
+const FILTER_PRESETS = {
+  none: { label: 'No filter', css: 'none' },
+  natural: { label: 'Natural glow', css: 'brightness(1.06) saturate(1.12)' },
+  warm: { label: 'Warm', css: 'sepia(0.16) saturate(1.12)' },
+  cool: { label: 'Cool', css: 'saturate(0.92) hue-rotate(12deg) contrast(1.04)' },
+  vivid: { label: 'Vivid', css: 'saturate(1.28) contrast(1.06)' },
+  soft: { label: 'Soft', css: 'brightness(1.05) contrast(0.92) saturate(1.04)' },
+  mono: { label: 'Monochrome', css: 'grayscale(1)' },
+  sepia: { label: 'Sepia', css: 'sepia(0.8)' },
+  vintage: { label: 'Vintage', css: 'sepia(0.28) contrast(1.08) saturate(0.82)' }
+};
+const DEEPAR_VERSION = '5.6.22';
+const DEEPAR_SCRIPT_URL = `https://cdn.jsdelivr.net/npm/deepar@${DEEPAR_VERSION}/js/deepar.js`;
+const DEEPAR_EFFECTS = {
+  'deepar-aviators': {
+    label: 'Aviators (DeepAR sample)',
+    url: `https://cdn.jsdelivr.net/npm/deepar@${DEEPAR_VERSION}/effects/aviators`
+  }
+};
+
+function isDeepAREffect(filterID) {
+  return Object.prototype.hasOwnProperty.call(DEEPAR_EFFECTS, filterID);
+}
+
+function getFilterLabel(filterID) {
+  return isDeepAREffect(filterID) ? DEEPAR_EFFECTS[filterID].label : FILTER_PRESETS[filterID].label;
+}
+
+function setStatus(s) {
+  $('status-bar').textContent = 'Status: ' + s;
+}
+
+async function createCameraSourceVideo() {
+  if (!localStream || !localStream.getVideoTracks().length) {
+    throw new Error('Camera video is not available');
+  }
+  const video = document.createElement('video');
+  video.autoplay = true;
+  video.muted = true;
+  video.playsInline = true;
+  video.srcObject = localStream;
+  try {
+    await video.play();
+    if (!video.videoWidth) {
+      await new Promise((resolve, reject) => {
+        let timeout;
+        const cleanup = () => {
+          window.clearTimeout(timeout);
+          video.removeEventListener('loadedmetadata', checkReady);
+          video.removeEventListener('loadeddata', checkReady);
+        };
+        const checkReady = () => {
+          if (!video.videoWidth || !video.videoHeight) return;
+          cleanup();
+          resolve();
+        };
+        timeout = window.setTimeout(() => {
+          cleanup();
+          reject(new Error('Timed out waiting for camera video'));
+        }, 5000);
+        video.addEventListener('loadedmetadata', checkReady);
+        video.addEventListener('loadeddata', checkReady);
+        checkReady();
+      });
+    }
+    return video;
+  } catch (err) {
+    video.pause();
+    video.srcObject = null;
+    throw err;
+  }
+}
+
+function stopFilterPipeline() {
+  if (filterTimer !== null) {
+    clearTimeout(filterTimer);
+    filterTimer = null;
+  }
+  if (filterCaptureStream) {
+    filterCaptureStream.getTracks().forEach(track => track.stop());
+    filterCaptureStream = null;
+  }
+  if (filterSourceVideo) {
+    filterSourceVideo.pause();
+    filterSourceVideo.srcObject = null;
+    filterSourceVideo = null;
+  }
+  filterCanvas = null;
+  filterContext = null;
+  filterVideoTrack = null;
+}
+
+function drawFilterFrame() {
+  if (!filterContext || !filterSourceVideo || !filterCanvas) return;
+  if (!camMuted && !isScreenSharing && filterSourceVideo.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA) {
+    filterContext.filter = FILTER_PRESETS[filterRenderPreset].css;
+    filterContext.drawImage(filterSourceVideo, 0, 0, filterCanvas.width, filterCanvas.height);
+    filterContext.filter = 'none';
+  }
+  filterTimer = window.setTimeout(drawFilterFrame, 1000 / 24);
+}
+
+async function startFilterPipeline(filterID) {
+  if (!localStream || !localStream.getVideoTracks().length) {
+    throw new Error('Camera video is not available');
+  }
+  if (!HTMLCanvasElement.prototype.captureStream) {
+    throw new Error('This browser does not support live canvas video');
+  }
+
+  if (filterVideoTrack) {
+    filterRenderPreset = filterID;
+    return new MediaStream([filterVideoTrack, ...localStream.getAudioTracks()]);
+  }
+
+  const sourceVideo = await createCameraSourceVideo();
+  let captureStream = null;
+  try {
+    const scale = Math.min(1, 960 / sourceVideo.videoWidth);
+    const canvas = document.createElement('canvas');
+    canvas.width = Math.max(2, Math.round(sourceVideo.videoWidth * scale));
+    canvas.height = Math.max(2, Math.round(sourceVideo.videoHeight * scale));
+    const context = canvas.getContext('2d', { alpha: false });
+    if (!context || !('filter' in context)) {
+      throw new Error('This browser does not support canvas color filters');
+    }
+    captureStream = canvas.captureStream(24);
+    const videoTrack = captureStream.getVideoTracks()[0];
+    if (!videoTrack) throw new Error('Could not create filtered video track');
+
+    filterRenderPreset = filterID;
+    filterSourceVideo = sourceVideo;
+    filterCanvas = canvas;
+    filterContext = context;
+    filterCaptureStream = captureStream;
+    filterVideoTrack = videoTrack;
+    drawFilterFrame();
+    return new MediaStream([videoTrack, ...localStream.getAudioTracks()]);
+  } catch (err) {
+    if (captureStream) captureStream.getTracks().forEach(track => track.stop());
+    sourceVideo.pause();
+    sourceVideo.srcObject = null;
+    throw err;
+  }
+}
+
+function loadDeepARSDK() {
+  if (window.deepar && typeof window.deepar.initialize === 'function') {
+    return Promise.resolve(window.deepar);
+  }
+  if (deepARLoader) return deepARLoader;
+  deepARLoader = new Promise((resolve, reject) => {
+    const script = document.createElement('script');
+    script.src = DEEPAR_SCRIPT_URL;
+    script.async = true;
+    script.onload = () => {
+      if (!window.deepar || typeof window.deepar.initialize !== 'function') {
+        deepARLoader = null;
+        reject(new Error('DeepAR SDK loaded without its initialize API'));
+        return;
+      }
+      resolve(window.deepar);
+    };
+    script.onerror = () => {
+      deepARLoader = null;
+      reject(new Error('Could not load the DeepAR Web SDK from jsDelivr'));
+    };
+    document.head.appendChild(script);
+  });
+  return deepARLoader;
+}
+
+async function startDeepARPipeline(effectID) {
+  const effect = DEEPAR_EFFECTS[effectID];
+  if (!effect) throw new Error('Unknown DeepAR effect');
+  const licenseKey = $('deepar-license').value.trim();
+  if (!licenseKey) throw new Error('Enter a DeepAR Web license key before selecting this effect');
+  if (!localStream || !localStream.getVideoTracks().length) {
+    throw new Error('Camera video is not available');
+  }
+
+  if (deepARInstance) {
+    if (deepAREffectID !== effectID) {
+      await deepARInstance.switchEffect(effect.url);
+      deepAREffectID = effectID;
+    }
+    return new MediaStream([deepARVideoTrack, ...localStream.getAudioTracks()]);
+  }
+
+  const cameraTrack = localStream.getVideoTracks()[0];
+  if (!originalCameraConstraints && cameraTrack.getConstraints) {
+    originalCameraConstraints = cameraTrack.getConstraints();
+  }
+  if (cameraTrack.applyConstraints) {
+    await cameraTrack.applyConstraints({
+      width: { ideal: 640 },
+      height: { ideal: 360 },
+      frameRate: { ideal: 24 }
+    });
+  }
+
+  let sourceVideo = null;
+  let engine = null;
+  let captureStream = null;
+  try {
+    const sdk = await loadDeepARSDK();
+    sourceVideo = await createCameraSourceVideo();
+    const canvas = document.createElement('canvas');
+    canvas.width = 1280;
+    canvas.height = 720;
+    engine = await sdk.initialize({
+      licenseKey,
+      canvas,
+      effect: effect.url,
+      additionalOptions: {
+        cameraConfig: { disableDefaultCamera: true }
+      }
+    });
+    engine.setVideoElement(sourceVideo, true);
+    const outputCanvas = engine.getCanvas();
+    if (!outputCanvas || !outputCanvas.captureStream) {
+      throw new Error('DeepAR did not provide a capturable canvas');
+    }
+    captureStream = outputCanvas.captureStream(24);
+    const videoTrack = captureStream.getVideoTracks()[0];
+    if (!videoTrack) throw new Error('DeepAR did not produce a video track');
+
+    deepARInstance = engine;
+    deepARSourceVideo = sourceVideo;
+    deepARCanvasStream = captureStream;
+    deepARVideoTrack = videoTrack;
+    deepAREffectID = effectID;
+    return new MediaStream([videoTrack, ...localStream.getAudioTracks()]);
+  } catch (err) {
+    if (captureStream) captureStream.getTracks().forEach(track => track.stop());
+    if (engine) engine.shutdown();
+    if (sourceVideo) {
+      sourceVideo.pause();
+      sourceVideo.srcObject = null;
+    }
+    await restoreDeepARCameraConstraints();
+    throw err;
+  }
+}
+
+function stopDeepARPipeline() {
+  if (deepARCanvasStream) {
+    deepARCanvasStream.getTracks().forEach(track => track.stop());
+    deepARCanvasStream = null;
+  }
+  if (deepARInstance) {
+    deepARInstance.shutdown();
+    deepARInstance = null;
+  }
+  if (deepARSourceVideo) {
+    deepARSourceVideo.pause();
+    deepARSourceVideo.srcObject = null;
+    deepARSourceVideo = null;
+  }
+  deepARVideoTrack = null;
+  deepAREffectID = null;
+}
+
+async function restoreDeepARCameraConstraints() {
+  if (!originalCameraConstraints) return;
+  const track = localStream && localStream.getVideoTracks()[0];
+  if (track && track.applyConstraints) {
+    await track.applyConstraints(originalCameraConstraints);
+  }
+  originalCameraConstraints = null;
+}
+
+async function changeLiveFilter() {
+  const select = $('live-filter');
+  const nextFilter = select.value;
+  if (!Object.prototype.hasOwnProperty.call(FILTER_PRESETS, nextFilter) && !isDeepAREffect(nextFilter)) {
+    select.value = activeFilter;
+    return;
+  }
+
+  const previousFilter = activeFilter;
+  const hadFilterPipeline = Boolean(filterVideoTrack);
+  const hadDeepAR = Boolean(deepARInstance);
+  if (!localStream || !client || !client.publishPC) {
+    activeFilter = nextFilter;
+    if (Object.prototype.hasOwnProperty.call(FILTER_PRESETS, nextFilter)) {
+      filterRenderPreset = nextFilter;
+    }
+    setStatus(nextFilter === 'none'
+      ? 'Filter cleared'
+      : getFilterLabel(nextFilter) + ' selected; it will apply when live');
+    return;
+  }
+  if (isScreenSharing) {
+    select.value = previousFilter;
+    return;
+  }
+
+  select.disabled = true;
+  try {
+    if (isDeepAREffect(nextFilter)) {
+      setStatus('Loading DeepAR effect...');
+      await startDeepARPipeline(nextFilter);
+      await client.replaceVideoTrack(deepARVideoTrack);
+      stopFilterPipeline();
+      $('preview').srcObject = deepARCanvasStream;
+    } else if (nextFilter === 'none') {
+      await restoreDeepARCameraConstraints();
+      await client.replaceVideoTrack(localStream.getVideoTracks()[0]);
+      stopFilterPipeline();
+      stopDeepARPipeline();
+      $('preview').srcObject = localStream;
+    } else {
+      const filteredStream = await startFilterPipeline(nextFilter);
+      await restoreDeepARCameraConstraints();
+      await client.replaceVideoTrack(filterVideoTrack);
+      stopDeepARPipeline();
+      $('preview').srcObject = filteredStream;
+    }
+    activeFilter = nextFilter;
+    if (Object.prototype.hasOwnProperty.call(FILTER_PRESETS, nextFilter)) {
+      filterRenderPreset = nextFilter;
+    }
+    setStatus('LIVE - ' + getFilterLabel(nextFilter));
+  } catch (err) {
+    select.value = previousFilter;
+    let message = err.message;
+    if (!hadFilterPipeline && filterVideoTrack) {
+      stopFilterPipeline();
+    }
+    if (!hadDeepAR && deepARInstance) {
+      stopDeepARPipeline();
+      try {
+        await restoreDeepARCameraConstraints();
+      } catch (restoreError) {
+        message += '; failed to restore camera settings: ' + restoreError.message;
+      }
+    }
+    if (isDeepAREffect(previousFilter)) {
+      $('preview').srcObject = deepARCanvasStream;
+    } else if (previousFilter === 'none') {
+      $('preview').srcObject = localStream;
+    } else if (filterCaptureStream) {
+      $('preview').srcObject = filterCaptureStream;
+    }
+    setStatus('Filter error: ' + message);
+  } finally {
+    select.disabled = isScreenSharing;
+  }
+}
+
+function appendChat(msg) {
+  const div = document.createElement('div');
+  const time = msg.at ? new Date(msg.at).toLocaleTimeString() : '';
+  div.textContent = `[${time}] ${msg.from}: ${msg.text}`;
+  $('chat-messages').appendChild(div);
+  $('chat-messages').scrollTop = $('chat-messages').scrollHeight;
+}
+
+$('btn-live').onclick = async () => {
+  try {
+    const publishToken = $('token').value.trim() || sessionToken;
+    if (!publishToken) throw new Error('Enter a publish token before going live');
+    setStatus('Acquiring camera and mic (720p30)...');
+    localStream = await navigator.mediaDevices.getUserMedia({
+      audio: true,
+      video: { width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 30 } }
+    });
+    $('preview').srcObject = localStream;
+
+    client = new HamiClient({
+      serverUrl: $('server').value,
+      token: publishToken,
+      room: $('room').value,
+      publisherID: $('streamer-id').value,
+      displayName: $('display-name').value,
+      onChat: appendChat
+    });
+
+    setStatus('Publishing to SFU...');
+    let publishStream = localStream;
+    if (isDeepAREffect(activeFilter)) {
+      publishStream = await startDeepARPipeline(activeFilter);
+      $('preview').srcObject = deepARCanvasStream;
+    } else if (activeFilter !== 'none') {
+      publishStream = await startFilterPipeline(activeFilter);
+      $('preview').srcObject = filterCaptureStream;
+    } else {
+      $('preview').srcObject = localStream;
+    }
+    await client.publish(publishStream);
+    client.connectEvents($('room').value);
+    sessionToken = publishToken;
+    $('token').value = '';
+
+    setStatus(activeFilter === 'none' ? 'LIVE' : 'LIVE - ' + getFilterLabel(activeFilter));
+    $('btn-live').disabled = true;
+    $('btn-stop-live').disabled = false;
+    $('btn-mic').disabled = false;
+    $('btn-cam').disabled = false;
+    $('btn-screen').disabled = false;
+    $('btn-leave').disabled = false;
+    $('btn-chat-send').disabled = false;
+  } catch (err) {
+    let message = err.message;
+    if (client && client.publishPC) {
+      try {
+        await client.stopPublishing();
+      } catch (cleanupError) {
+        message += '; publisher cleanup failed: ' + cleanupError.message;
+      }
+    }
+    stopFilterPipeline();
+    stopDeepARPipeline();
+    try {
+      await restoreDeepARCameraConstraints();
+    } catch (restoreError) {
+      message += '; camera restore failed: ' + restoreError.message;
+    }
+    if (localStream) {
+      localStream.getTracks().forEach(track => track.stop());
+      localStream = null;
+    }
+    $('preview').srcObject = null;
+    setStatus('Error: ' + message);
+  }
+};
+
+$('btn-stop-live').onclick = async () => {
+  if (!client) return;
+  try {
+    setStatus('Stopping publication (staying in room)...');
+    await client.stopPublishing();
+    stopFilterPipeline();
+    stopDeepARPipeline();
+    await restoreDeepARCameraConstraints();
+    $('preview').srcObject = localStream;
+    setStatus('Stopped publication (watching/in room)');
+    $('btn-live').disabled = false;
+    $('btn-stop-live').disabled = true;
+    $('btn-mic').disabled = true;
+    $('btn-cam').disabled = true;
+    $('btn-screen').disabled = true;
+    $('live-filter').disabled = false;
+  } catch (err) {
+    setStatus('Error stopping live: ' + err.message);
+  }
+};
+
+$('btn-mic').onclick = () => {
+  if (!client) return;
+  micMuted = !micMuted;
+  client.muteAudio(micMuted);
+  $('btn-mic').textContent = micMuted ? 'Unmute Mic' : 'Mute Mic';
+  $('btn-mic').classList.toggle('active', micMuted);
+  setStatus(micMuted ? 'Microphone muted (track.enabled = false)' : 'Microphone unmuted');
+};
+
+$('btn-cam').onclick = () => {
+  if (!client) return;
+  camMuted = !camMuted;
+  client.muteVideo(camMuted);
+  if (deepARInstance) deepARInstance.setPaused(camMuted);
+  $('btn-cam').textContent = camMuted ? 'Unmute Cam' : 'Mute Cam';
+  $('btn-cam').classList.toggle('active', camMuted);
+  setStatus(camMuted ? 'Camera muted (track.enabled = false)' : 'Camera unmuted');
+};
+
+$('btn-screen').onclick = async () => {
+  if (!client) return;
+  try {
+    if (!isScreenSharing) {
+      await client.shareScreen();
+      isScreenSharing = true;
+      if (deepARInstance) deepARInstance.setPaused(true);
+      $('btn-screen').textContent = 'Stop Screen Share';
+      $('btn-screen').classList.add('active');
+      $('live-filter').disabled = true;
+      setStatus('Screen sharing active (replaceTrack)');
+    } else {
+      await client.stopScreenShare();
+      isScreenSharing = false;
+      if (deepARInstance) deepARInstance.setPaused(camMuted);
+      $('btn-screen').textContent = 'Share Screen';
+      $('btn-screen').classList.remove('active');
+      $('live-filter').disabled = false;
+      setStatus('Returned to camera (replaceTrack)');
+    }
+  } catch (err) {
+    setStatus('Screen share error: ' + err.message);
+  }
+};
+
+$('btn-leave').onclick = async () => {
+  if (!client) return;
+  await client.leave();
+  sessionToken = '';
+  stopFilterPipeline();
+  stopDeepARPipeline();
+  try {
+    await restoreDeepARCameraConstraints();
+  } catch (err) {
+    setStatus('Camera restore error: ' + err.message);
+  }
+  if (localStream) {
+    localStream.getTracks().forEach(t => t.stop());
+    localStream = null;
+  }
+  $('preview').srcObject = null;
+  setStatus('Left the room');
+  $('btn-live').disabled = false;
+  $('btn-stop-live').disabled = true;
+  $('btn-mic').disabled = true;
+  $('btn-cam').disabled = true;
+  $('btn-screen').disabled = true;
+  $('live-filter').disabled = false;
+  $('btn-leave').disabled = true;
+  $('btn-chat-send').disabled = true;
+};
+
+$('live-filter').addEventListener('change', changeLiveFilter);
+
+$('btn-chat-send').onclick = async () => {
+  if (!client) return;
+  const text = $('chat-text').value.trim();
+  if (!text) return;
+  try {
+    await client.sendChat(text);
+    $('chat-text').value = '';
+  } catch (err) {
+    setStatus('Chat send error: ' + err.message);
+  }
+};
+</script>
+
+</body>
+</html>

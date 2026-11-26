@@ -2,11 +2,9 @@
 # One test command (job 1.8): unit + race + integration + fuzz smoke,
 # then one summary. Run from the repo root:
 #   sh scripts/test-all.sh
-# The repo is a single Go package (main); "integration" tests are the
-# local-pair / SFU / TURN tests inside the same suite, not a separate
-# package. There are currently zero `func Fuzz` targets (job 8.6 is
-# OPEN), so the fuzz step reports that and continues instead of
-# failing.
+# The repo's local-pair / SFU / TURN tests are part of the Go test
+# suite, not a separate package. Fuzz targets are run one at a time
+# from the main package.
 #
 # Known VM limit: this sandbox blocks unconnected UDP, so exactly
 # six tests fail here for that reason, not code. The summary lists
@@ -103,15 +101,18 @@ fi
 
 echo "== fuzz smoke =="
 if grep -rq "^func Fuzz" --include="*_test.go" .; then
-  # One short fuzz run per target; a target that finds a crash fails.
-  if go test -run="^Fuzz" -fuzz="Fuzz" -fuzztime=10s ./... > "$TMPDIR_WORK/fuzz.log" 2>&1; then
-    echo "fuzz smoke: PASS"
-  else
-    echo "fuzz smoke: FAIL (see $TMPDIR_WORK/fuzz.log)"
-    overall=1
-  fi
+  # -fuzz accepts exactly one matching target and requires one package.
+  for target in $(grep -rh "^func Fuzz" --include="*_test.go" . | sed -E 's/^func ([^(]+).*/\1/'); do
+    echo "--- $target ---"
+    if go test -run='^$' -fuzz="^${target}$" -fuzztime=10s . > "$TMPDIR_WORK/fuzz-$target.log" 2>&1; then
+      echo "fuzz $target: PASS"
+    else
+      echo "fuzz $target: FAIL (see $TMPDIR_WORK/fuzz-$target.log)"
+      overall=1
+    fi
+  done
 else
-  echo "fuzz smoke: SKIPPED — no func Fuzz targets in the tree (job 8.6 OPEN)"
+  echo "fuzz smoke: SKIPPED — no func Fuzz targets in the tree"
 fi
 
 echo "== summary =="

@@ -200,6 +200,9 @@ func BenchmarkEgressShardVsDirect(b *testing.B) {
 		{"shard4/100viewers", 100, 4},
 		{"direct/1000viewers", 1000, 0},
 		{"shard4/1000viewers", 1000, 4},
+		{"shard8/1000viewers", 1000, 8},
+		{"shard16/1000viewers", 1000, 16},
+		{"shard32/1000viewers", 1000, 32},
 	} {
 		b.Run(tc.name, func(b *testing.B) {
 			subs, send, cleanup := newFanOut(b, tc.viewers, tc.shards)

@@ -1,0 +1,281 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Hami Viewer</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  body { font-family: system-ui, -apple-system, sans-serif; max-width: 1100px; margin: 2rem auto; padding: 0 1rem; background: #fdfdfd; color: #222; }
+  h1 { font-size: 1.5rem; margin-bottom: 0.5rem; }
+  .controls { display: flex; flex-wrap: wrap; gap: 0.5rem; margin: 1rem 0; align-items: center; }
+  button { padding: 0.5rem 1rem; font-size: 0.95rem; border: 1px solid #ccc; border-radius: 4px; background: #eee; cursor: pointer; font-weight: 500; }
+  button:hover:not(:disabled) { background: #ddd; }
+  input { padding: 0.4rem 0.6rem; font-size: 0.95rem; border: 1px solid #ccc; border-radius: 4px; }
+  
+  /* Layout: Focused Frame & Member Tiles Grid */
+  .layout { display: flex; flex-direction: column; gap: 1rem; }
+  #focus-container { width: 100%; aspect-ratio: 16/9; background: #000; border-radius: 8px; overflow: hidden; display: none; position: relative; cursor: pointer; }
+  #focus-container video { width: 100%; height: 100%; object-fit: contain; }
+  #focus-label { position: absolute; bottom: 8px; left: 8px; background: rgba(0,0,0,0.6); color: #fff; padding: 4px 8px; border-radius: 4px; font-size: 0.8rem; }
+  
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 1rem; }
+  .tile { aspect-ratio: 16/9; background: #1a1a1a; border-radius: 6px; overflow: hidden; position: relative; cursor: pointer; border: 2px solid transparent; transition: border-color 0.2s; }
+  .tile:hover { border-color: #0066cc; }
+  .tile video { width: 100%; height: 100%; object-fit: cover; }
+  .tile-header { position: absolute; bottom: 6px; left: 6px; background: rgba(0,0,0,0.6); color: #fff; padding: 2px 6px; border-radius: 3px; font-size: 0.8rem; }
+  
+  #status-bar { padding: 0.5rem; background: #eee; border-radius: 4px; font-size: 0.85rem; margin-top: 0.5rem; font-family: monospace; }
+  .chat-box { margin-top: 1.5rem; border: 1px solid #ddd; border-radius: 6px; padding: 1rem; background: #fafafa; }
+  .chat-messages { height: 150px; overflow-y: auto; background: #fff; border: 1px solid #eee; padding: 0.5rem; margin-bottom: 0.5rem; font-size: 0.9rem; }
+  .chat-input { display: flex; gap: 0.5rem; }
+  .chat-input input { flex: 1; }
+</style>
+</head>
+<body>
+
+<h1>Hami Browser Viewer</h1>
+
+<div class="controls">
+  <input id="server" value="" placeholder="Server URL" size="24">
+  <input id="room" value="demo" placeholder="Room" size="10">
+  <input id="viewer-id" value="viewer-1" placeholder="Viewer ID" size="12">
+  <input id="display-name" value="Viewer One" placeholder="Display Name" size="14">
+  <input id="token" type="password" autocomplete="off" placeholder="Subscribe Token" size="30">
+  <button id="btn-watch">Watch Room</button>
+  <button id="btn-leave" disabled>Leave Room</button>
+</div>
+
+<div id="status-bar">Status: Idle</div>
+
+<div class="layout">
+  <!-- Focus Frame (Click to Return) -->
+  <div id="focus-container" title="Click to return to grid">
+    <video id="focus-video" autoplay playsinline></video>
+    <div id="focus-label">Focused Stream (Click to un-focus)</div>
+  </div>
+
+  <!-- Participant Tiles Grid -->
+  <h3>Live Streamers</h3>
+  <div id="participant-grid" class="grid"></div>
+</div>
+
+<div class="chat-box">
+  <h3>Room Chat</h3>
+  <div id="chat-messages" class="chat-messages"></div>
+  <div class="chat-input">
+    <input id="chat-text" placeholder="Type a message (max 300 chars)..." maxlength="300">
+    <button id="btn-chat-send" disabled>Send</button>
+  </div>
+</div>
+
+<script src="/sdk/web/hami.js"></script>
+<script>
+const $ = id => document.getElementById(id);
+if (!$('server').value) {
+  $('server').value = window.location.origin;
+}
+
+let client = null;
+let members = new Map(); // id -> { id, name, tileEl, videoEl, client }
+let focusedId = null;
+
+function setStatus(s) {
+  $('status-bar').textContent = 'Status: ' + s;
+}
+
+function appendChat(msg) {
+  const div = document.createElement('div');
+  const time = msg.at ? new Date(msg.at).toLocaleTimeString() : '';
+  div.textContent = `[${time}] ${msg.from}: ${msg.text}`;
+  $('chat-messages').appendChild(div);
+  $('chat-messages').scrollTop = $('chat-messages').scrollHeight;
+}
+
+// S8 & S9: Tiles created from presence list, NOT from track arrival
+function addParticipantTile(member) {
+  if (members.has(member.id)) return;
+
+  const tile = document.createElement('div');
+  tile.className = 'tile';
+  tile.id = 'tile-' + member.id;
+  
+  const video = document.createElement('video');
+  video.autoplay = true;
+  video.playsInline = true;
+  video.muted = false; // audible
+
+  const header = document.createElement('div');
+  header.className = 'tile-header';
+  header.textContent = member.name || member.id;
+
+  tile.appendChild(video);
+  tile.appendChild(header);
+
+  // Click to focus / return
+  tile.onclick = () => focusTile(member.id);
+
+  $('participant-grid').appendChild(tile);
+  members.set(member.id, { ...member, tileEl: tile, videoEl: video, statusEl: header });
+
+  // Resolve the publisher's runtime WebRTC track ID before subscribing.
+  subscribeToMember(member.id, video);
+}
+
+function removeParticipantTile(id) {
+  const m = members.get(id);
+  if (!m) return;
+  if (focusedId === id) {
+    unfocusTile();
+  }
+  if (m.tileEl && m.tileEl.parentNode) {
+    m.tileEl.parentNode.removeChild(m.tileEl);
+  }
+  if (m.subClient) {
+    m.subClient.leave();
+  }
+  members.delete(id);
+}
+
+async function subscribeToMember(pubId, videoEl) {
+  try {
+    const member = members.get(pubId);
+    const roomClient = client;
+    if (!member || !roomClient) return;
+    member.statusEl.textContent = `${member.name || pubId} (waiting for video...)`;
+
+    let trackID = '';
+    for (let attempt = 0; attempt < 20; attempt++) {
+      if (!members.has(pubId) || client !== roomClient) return;
+      const response = await roomClient.getMembers($('room').value);
+      const current = response.members?.find(item => item.id === pubId);
+      const videoTrack = current?.tracks?.find(track => track.kind === 'video');
+      if (videoTrack) {
+        trackID = videoTrack.id;
+        break;
+      }
+      await new Promise(resolve => setTimeout(resolve, 250));
+    }
+    if (!trackID) throw new Error(`No video track was published by ${pubId}`);
+    if (!members.has(pubId) || client !== roomClient) return;
+
+    const subClient = new HamiClient({
+      serverUrl: $('server').value,
+      token: roomClient.token,
+      room: $('room').value,
+      viewerID: $('viewer-id').value,
+      subscriberID: `${$('viewer-id').value}-${pubId}`,
+      onTrack: (track, streams) => {
+        const stream = (streams && streams[0]) ||
+          (videoEl.srcObject instanceof MediaStream ? videoEl.srcObject : new MediaStream());
+        if (!stream.getTracks().includes(track)) stream.addTrack(track);
+        videoEl.srcObject = stream;
+        videoEl.play().catch(err => {
+          member.statusEl.title = `Video playback failed: ${err.message}`;
+        });
+      }
+    });
+    member.subClient = subClient;
+    await subClient.subscribe(pubId, trackID);
+    if (members.has(pubId)) member.statusEl.textContent = member.name || pubId;
+  } catch (err) {
+    const member = members.get(pubId);
+    if (member) {
+      member.statusEl.textContent = `${member.name || pubId} (stream unavailable)`;
+      member.statusEl.title = err && err.message ? err.message : String(err);
+    }
+    console.error(`Subscribe to ${pubId} error:`, err);
+  }
+}
+
+// S9: Focus view
+function focusTile(id) {
+  const m = members.get(id);
+  if (!m || !m.videoEl) return;
+
+  focusedId = id;
+  const focusContainer = $('focus-container');
+  const focusVideo = $('focus-video');
+
+  focusVideo.srcObject = m.videoEl.srcObject;
+  focusContainer.style.display = 'block';
+  $('focus-label').textContent = `Focused: ${m.name || m.id} (Click to return to grid)`;
+  m.tileEl.style.opacity = '0.3';
+}
+
+function unfocusTile() {
+  if (!focusedId) return;
+  const m = members.get(focusedId);
+  if (m && m.tileEl) m.tileEl.style.opacity = '1';
+  focusedId = null;
+  $('focus-video').srcObject = null;
+  $('focus-container').style.display = 'none';
+}
+
+$('focus-container').onclick = unfocusTile;
+
+$('btn-watch').onclick = async () => {
+  $('chat-messages').replaceChildren();
+  try {
+    setStatus('Connecting to room...');
+    const token = $('token').value.trim();
+    client = new HamiClient({
+      serverUrl: $('server').value,
+      token,
+      room: $('room').value,
+      viewerID: $('viewer-id').value,
+      displayName: $('display-name').value,
+      onMemberJoined: addParticipantTile,
+      onMemberLeft: data => removeParticipantTile(data.id),
+      onChat: appendChat
+    });
+
+    // 1. Connect to SSE events
+    client.connectEvents($('room').value);
+
+    // 2. Fetch existing members
+    const res = await client.getMembers($('room').value);
+    if (res.members) {
+      res.members.forEach(addParticipantTile);
+    }
+
+    $('token').value = '';
+    setStatus(`Watching room: ${$('room').value}`);
+    $('btn-watch').disabled = true;
+    $('btn-leave').disabled = false;
+    $('btn-chat-send').disabled = false;
+  } catch (err) {
+    setStatus('Error: ' + err.message);
+  }
+};
+
+$('btn-leave').onclick = async () => {
+  if (client) {
+    await client.leave();
+    client = null;
+  }
+  // Clear members
+  for (const id of Array.from(members.keys())) {
+    removeParticipantTile(id);
+  }
+  unfocusTile();
+  setStatus('Left room');
+  $('btn-watch').disabled = false;
+  $('btn-leave').disabled = true;
+  $('btn-chat-send').disabled = true;
+};
+
+$('btn-chat-send').onclick = async () => {
+  if (!client) return;
+  const text = $('chat-text').value.trim();
+  if (!text) return;
+  try {
+    await client.sendChat(text);
+    $('chat-text').value = '';
+  } catch (err) {
+    setStatus('Chat send error: ' + err.message);
+  }
+};
+</script>
+
+</body>
+</html>
