@@ -117,6 +117,7 @@ Splitting the server core into an importable Go package is planned work. It is l
 ## Docs
 
 - [Setup](docs/setup.md) — install, build, first run.
+- [Run a load test](docs/load-test.md) — build, run, and keep evidence with one command.
 - [Configuration](docs/configuration.md) — every flag and setting.
 - [Capacity](docs/capacity.md) — measured limits, and the detector.
 - [API and auth](docs/api-auth.md) — endpoints and tokens.

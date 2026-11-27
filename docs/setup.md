@@ -50,6 +50,17 @@ go test ./...
 
 This runs the unit tests: about 100 test functions plus 2 benchmarks. They do not need a network. They do not need a video file.
 
+For a local simulated SFU load test, use the runner instead of manually
+building a binary and assembling flags. It records the command and preserves
+setup failures as evidence:
+
+```sh
+python3 scripts/load-test.py --video /path/to/video.h264
+```
+
+See [load-test.md](load-test.md) for larger runs, safety confirmation, and
+the evidence format.
+
 Some tests need UDP loopback. They are the proof modes (`-mode sfu-single` and friends), not `go test`. On a locked-down sandbox, UDP may be blocked and those runs will fail with a permission error. That is the sandbox, not the code. See [troubleshooting.md](troubleshooting.md).
 
 ## Check the formatting and the vet
