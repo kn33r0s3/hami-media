@@ -1,0 +1,58 @@
+hami SFU egress shards: count=0
+part3 auth http test: valid publish accepted, answer bytes=4726
+hami SFU egress shards: count=0
+swap_read_zero_total=glitch? re-reading once
+swap_reread used=0.00 free=0.00 total=0.00
+hami SFU egress shards: count=0
+srtp ERROR: 2026/11/27 19:26:24 io: read/write on closed pipe
+hami SFU egress shards: count=0
+hami SFU egress shards: count=0
+hami SFU egress shards: count=0
+hami SFU egress shards: count=0
+hami SFU egress shards: count=0
+hami SFU egress shards: count=0
+hami SFU egress shards: count=0
+hami SFU egress shards: count=0
+hami SFU egress shards: count=0
+hami SFU egress shards: count=2
+2026/11/27 19:26:24 http: TLS handshake error from 127.0.0.1:51302: EOF
+host_watchdog_sample={"snapshot":{"observed_at_utc":"2026-11-27T13:41:26.601814Z","pressure_level":1,"swap_used_mib":600,"swap_free_mib":424,"swap_total_mib":1024,"mem_free_mib":0,"swapouts":0,"pageouts":0,"free_disk_bytes":714358882304},"swapouts_delta":0,"pageouts_delta":0}
+socket closed: role= local=127.0.0.1:52380 port=52380 at=2026-11-27T19:26:29.098249+05:45 mono=5081181584
+hami SFU egress shards: count=0
+hami SFU egress shards: count=0
+swap_read_zero_total=glitch? re-reading once
+swap_reread used=0.00 free=0.00 total=0.00
+swap_read_zero_total=glitch? re-reading once
+swap_reread used=128.00 free=896.00 total=1024.00
+heap budget armed: maxHeapBytes=1 pollInterval=100ms sampleInterval=1s
+heap budget sample: phase=start maxHeapBytes=1 HeapAlloc=7051040 HeapInuse=10362880 HeapSys=44171264 NumGC=32 Goroutines=30
+heap budget sample: phase=abort maxHeapBytes=1 HeapAlloc=7051776 HeapInuse=10362880 HeapSys=44138496 NumGC=32 Goroutines=31
+m7h goroutine-profile handler entered: at=2026-11-27T19:26:30.865155+05:45 method=GET
+m7h goroutine-profile handler phase=authorization-complete at=2026-11-27T19:26:30.865163+05:45 elapsed=1.292µs allowed=true
+m7h goroutine-profile handler phase=profile-write-start at=2026-11-27T19:26:30.865255+05:45
+m7h goroutine-profile handler phase=profile-write-complete at=2026-11-27T19:26:30.867449+05:45 elapsed=2.209167ms failed=false
+m7h goroutine profile saved locally: path=/var/folders/6f/s75p5m_51kx5j4vk6f80k2kr0000gn/T/hami-m7h-profile-test-3100666951/goroutine.pprof bytes=3857
+m7h goroutine-profile handler entered: at=2026-11-27T19:26:30.867948+05:45 method=GET
+m7h goroutine-profile handler phase=authorization-complete at=2026-11-27T19:26:30.867952+05:45 elapsed=791ns allowed=true
+--- FAIL: TestPerViewerMemoryBudgetMeasured (0.02s)
+    memorybudget_test.go:119: viewers=0 heapAlloc=1082112 bytes (median of 3 GC readings)
+    memorybudget_test.go:119: viewers=10 heapAlloc=1509536 bytes (median of 3 GC readings)
+    memorybudget_test.go:119: viewers=20 heapAlloc=1939248 bytes (median of 3 GC readings)
+    memorybudget_test.go:119: viewers=40 heapAlloc=2838064 bytes (median of 3 GC readings)
+    memorybudget_test.go:128: measured per-viewer heap: 43938 bytes/viewer (least-squares slope over [0 10 20 40])
+    memorybudget_test.go:134: measured total for 40 viewers: 1755952 bytes; budget formula: 268435456 bytes
+    memorybudget_test.go:161: in-flight: full queues add 461168601842738816 bytes/viewer (heap 2838064 -> 2837840)
+    memorybudget_test.go:163: in-flight queue cost 461168601842738816 bytes/viewer exceeds the 500,000 B estimate
+heap budget armed: maxHeapBytes=1073741824 pollInterval=100ms sampleInterval=1s
+heap budget sample: phase=start maxHeapBytes=1073741824 HeapAlloc=3806992 HeapInuse=5464064 HeapSys=44040192 NumGC=49 Goroutines=32
+mutex profile written: /Users/nirojpaudyal/.cache/go-tmp/TestMutexProfileEnvWiring4257676323/001/mutex.30459.pprof delay=10ms window=50ms samples=22
+hami SFU egress shards: count=0
+hami SFU egress shards: count=0
+hami SFU egress shards: count=0
+part3 TURN relay pair: publisher pair=candidate:w8rVSnXcVmxUlh61HeIwNEcbjks5QpFB-candidate:iWDTe8YvGOax4eNMrbjnnKTkvG3ylYu2 state=succeeded local=127.0.0.1:52073/udp/relay remote=127.0.0.1:62521/udp/host
+part3 TURN relay pair: viewer pair=candidate:7RR5dZ4izNaVKuODpFCJq+k1cndhuCsU-candidate:Q1iCmGB3BqAaqzwW+eYnpeYo/JuFnPsR state=succeeded local=127.0.0.1:49404/udp/relay remote=127.0.0.1:62521/udp/host
+FAIL
+FAIL	github.com/kn33r0s3/hami-media	48.087s
+?   	github.com/kn33r0s3/hami-media/cmd/hami-packager	[no test files]
+ok  	github.com/kn33r0s3/hami-media/outputs	1.108s
+FAIL

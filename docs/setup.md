@@ -2,7 +2,7 @@
 
 ## What you need
 
-- Go 1.24 or newer. Check with `go version`.
+- Go 1.26 or newer. Check with `go version`.
 - A Mac, Linux PC, or Windows PC.
 - `ffmpeg` only if you want to make a test video. Any H.264 file works.
 

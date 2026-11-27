@@ -17,6 +17,12 @@ jobs:
           go-version: "1.26"
       - name: leak scan
         run: python3 scripts/leak-scan.py .
+      - name: source manifest
+        run: |
+          python3 scripts/source-manifest.py --check
+          python3 scripts/test_source_manifest.py
+      - name: evidence summary
+        run: python3 scripts/test_write_test_summary.py
       - name: gofmt
         run: |
           if [ -n "$(gofmt -l .)" ]; then

@@ -36,45 +36,59 @@ export PATH="$HOME/go/bin:$PATH"
 
 KNOWN="TestLocalPairReceivesAudioAndVideoRTP TestCountingUDPMuxCountsPeerWritesWithoutClosingSharedMux TestPacketReadCountingConnCountsDatagrams TestLocalSFURoutesAuthorizedStreamsAndRTCP TestLocalSFUCascadeRoutesRTCPAcrossWorkers TestSFUTURNRelayCarriesMedia"
 
-TMPDIR_WORK="$(mktemp -d)"
-trap 'rm -rf "$TMPDIR_WORK"' EXIT INT TERM
+RESULTS_ROOT="${TEST_ALL_RESULTS_DIR:-results/test-all}"
+mkdir -p "$RESULTS_ROOT"
+TMPDIR_WORK="$(mktemp -d "$RESULTS_ROOT/$(date -u +%Y%m%dT%H%M%SZ)-XXXXXX")"
+printf 'trial_id\t%s\n' "$(basename "$TMPDIR_WORK")" > "$TMPDIR_WORK/steps.tsv"
+
+record_step() {
+  printf '%s\t%s\n' "$1" "$2" >> "$TMPDIR_WORK/steps.tsv"
+}
 
 overall=0
 
 echo "== leak scan =="
-if python3 scripts/leak-scan.py . > "$TMPDIR_WORK/leak.log" 2>&1; then
+if python3 scripts/leak-scan.py . > "$TMPDIR_WORK/leak.txt" 2>&1; then
   echo "leak scan: PASS"
+  record_step leak_scan PASS
 else
-  echo "leak scan: FAIL (see $TMPDIR_WORK/leak.log)"
-  cat "$TMPDIR_WORK/leak.log"
+  echo "leak scan: FAIL (see $TMPDIR_WORK/leak.txt)"
+  cat "$TMPDIR_WORK/leak.txt"
+  record_step leak_scan FAIL
   overall=1
 fi
 
 echo "== gofmt =="
 if [ -z "$(gofmt -l .)" ]; then
   echo "gofmt: PASS"
+  record_step gofmt PASS
 else
   echo "gofmt: FAIL (unformatted: $(gofmt -l . | tr '\n' ' '))"
+  record_step gofmt FAIL
   overall=1
 fi
 
 echo "== go vet =="
-if go vet ./... > "$TMPDIR_WORK/vet.log" 2>&1; then
+if go vet ./... > "$TMPDIR_WORK/vet.txt" 2>&1; then
   echo "go vet: PASS"
+  record_step go_vet PASS
 else
-  echo "go vet: FAIL (see $TMPDIR_WORK/vet.log)"
-  cat "$TMPDIR_WORK/vet.log"
+  echo "go vet: FAIL (see $TMPDIR_WORK/vet.txt)"
+  cat "$TMPDIR_WORK/vet.txt"
+  record_step go_vet FAIL
   overall=1
 fi
 
 echo "== unit + integration (go test) =="
 # The NACK loss test is skipped here; it runs separately below with
 # the carve-out tag (docs/nack-test-carve-out.md).
-if go test -skip 'TestLocalSFURoutesAuthorizedStreamsAndRTCP' -count=1 ./... > "$TMPDIR_WORK/unit.log" 2>&1; then
+if go test -skip 'TestLocalSFURoutesAuthorizedStreamsAndRTCP' -count=1 ./... > "$TMPDIR_WORK/unit.txt" 2>&1; then
   echo "unit: PASS"
+  record_step unit_and_integration PASS
 else
   echo "unit: FAIL"
-  grep "^--- FAIL" "$TMPDIR_WORK/unit.log" || true
+  grep "^--- FAIL" "$TMPDIR_WORK/unit.txt" || true
+  record_step unit_and_integration FAIL
   overall=1
 fi
 
@@ -82,20 +96,24 @@ echo "== NACK loss test (tagged carve-out, see docs/nack-test-carve-out.md) =="
 # -run ONLY this test, never the whole suite: the replay test fails
 # under this tag by design. The tag is test-only, never for a
 # shipped/production binary.
-if go test -tags hami_disable_srtp_replay -run 'TestLocalSFURoutesAuthorizedStreamsAndRTCP' -count=1 ./... > "$TMPDIR_WORK/nack.log" 2>&1; then
+if go test -tags hami_disable_srtp_replay -run 'TestLocalSFURoutesAuthorizedStreamsAndRTCP' -count=1 ./... > "$TMPDIR_WORK/nack.txt" 2>&1; then
   echo "nack loss test: PASS"
+  record_step nack_carve_out PASS
 else
   echo "nack loss test: FAIL"
-  grep "^--- FAIL" "$TMPDIR_WORK/nack.log" || true
+  grep "^--- FAIL" "$TMPDIR_WORK/nack.txt" || true
+  record_step nack_carve_out FAIL
   overall=1
 fi
 
 echo "== race (go test -race) =="
-if go test -race -skip 'TestLocalSFURoutesAuthorizedStreamsAndRTCP' -count=1 ./... > "$TMPDIR_WORK/race.log" 2>&1; then
+if go test -race -skip 'TestLocalSFURoutesAuthorizedStreamsAndRTCP' -count=1 ./... > "$TMPDIR_WORK/race.txt" 2>&1; then
   echo "race: PASS (no data races)"
+  record_step race PASS
 else
   echo "race: FAIL"
-  grep -E "DATA RACE|^--- FAIL" "$TMPDIR_WORK/race.log" | head -n 20 || true
+  grep -E "DATA RACE|^--- FAIL" "$TMPDIR_WORK/race.txt" | head -n 20 || true
+  record_step race FAIL
   overall=1
 fi
 
@@ -104,22 +122,26 @@ if grep -rq "^func Fuzz" --include="*_test.go" .; then
   # -fuzz accepts exactly one matching target and requires one package.
   for target in $(grep -rh "^func Fuzz" --include="*_test.go" . | sed -E 's/^func ([^(]+).*/\1/'); do
     echo "--- $target ---"
-    if go test -run='^$' -fuzz="^${target}$" -fuzztime=10s . > "$TMPDIR_WORK/fuzz-$target.log" 2>&1; then
+    if go test -run='^$' -fuzz="^${target}$" -fuzztime=10s . > "$TMPDIR_WORK/fuzz-$target.txt" 2>&1; then
       echo "fuzz $target: PASS"
+      record_step "fuzz:$target" PASS
     else
-      echo "fuzz $target: FAIL (see $TMPDIR_WORK/fuzz-$target.log)"
+      echo "fuzz $target: FAIL (see $TMPDIR_WORK/fuzz-$target.txt)"
+      record_step "fuzz:$target" FAIL
       overall=1
     fi
   done
 else
   echo "fuzz smoke: SKIPPED — no func Fuzz targets in the tree"
+  record_step fuzz_smoke SKIPPED
 fi
 
 echo "== summary =="
 if [ "$overall" -eq 0 ]; then
   echo "test-all: ALL PASS (leak, gofmt, vet, unit, nack, race, fuzz)"
+  record_step overall PASS
 else
-  fails="$(grep "^--- FAIL" "$TMPDIR_WORK/unit.log" "$TMPDIR_WORK/race.log" "$TMPDIR_WORK/nack.log" 2>/dev/null | sed 's/.*FAIL: \([A-Za-z0-9]*\).*/\1/' | sort -u | tr '\n' ' ')"
+  fails="$(grep "^--- FAIL" "$TMPDIR_WORK/unit.txt" "$TMPDIR_WORK/race.txt" "$TMPDIR_WORK/nack.txt" 2>/dev/null | sed 's/.*FAIL: \([A-Za-z0-9]*\).*/\1/' | sort -u | tr '\n' ' ')"
   known_only=1
   for f in $fails; do
     case " $KNOWN " in *" $f "*) ;; *) known_only=0 ;; esac
@@ -132,6 +154,10 @@ else
   else
     echo "test-all: FAIL — see the sections above"
   fi
-  echo "per-step logs were in a temp dir that is cleaned up on exit; re-run a step directly to inspect it"
+  record_step overall FAIL
 fi
+if ! python3 scripts/write-test-summary.py "$TMPDIR_WORK"; then
+  overall=1
+fi
+echo "test-all evidence: $TMPDIR_WORK"
 exit "$overall"

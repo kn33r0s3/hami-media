@@ -1,0 +1,3 @@
+ok  	github.com/kn33r0s3/hami-media	49.250s
+?   	github.com/kn33r0s3/hami-media/cmd/hami-packager	[no test files]
+ok  	github.com/kn33r0s3/hami-media/outputs	2.016s

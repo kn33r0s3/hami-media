@@ -1,0 +1,53 @@
+hami SFU egress shards: count=0
+part3 auth http test: valid publish accepted, answer bytes=4725
+hami SFU egress shards: count=0
+swap_read_zero_total=glitch? re-reading once
+swap_reread used=0.00 free=0.00 total=0.00
+hami SFU egress shards: count=0
+srtp ERROR: 2026/11/27 12:58:25 io: read/write on closed pipe
+hami SFU egress shards: count=0
+hami SFU egress shards: count=0
+hami SFU egress shards: count=0
+hami SFU egress shards: count=0
+hami SFU egress shards: count=0
+hami SFU egress shards: count=0
+hami SFU egress shards: count=0
+hami SFU egress shards: count=0
+hami SFU egress shards: count=0
+hami SFU egress shards: count=2
+2026/11/27 12:58:25 http: TLS handshake error from 127.0.0.1:37526: EOF
+host_watchdog_sample={"snapshot":{"observed_at_utc":"2026-11-27T12:58:27.202347003Z","pressure_level":1,"swap_used_mib":600,"swap_free_mib":424,"swap_total_mib":1024,"mem_free_mib":0,"swapouts":0,"pageouts":0,"free_disk_bytes":182566010224640},"swapouts_delta":0,"pageouts_delta":0}
+socket closed: role= local=127.0.0.1:49851 port=49851 at=2026-11-27T12:58:30.112874421Z mono=5613161502
+hami SFU egress shards: count=0
+hami SFU egress shards: count=0
+swap_read_zero_total=glitch? re-reading once
+swap_reread used=0.00 free=0.00 total=0.00
+swap_read_zero_total=glitch? re-reading once
+swap_reread used=128.00 free=896.00 total=1024.00
+heap budget armed: maxHeapBytes=1 pollInterval=100ms sampleInterval=1s
+heap budget sample: phase=start maxHeapBytes=1 HeapAlloc=3411784 HeapInuse=5095424 HeapSys=52887552 NumGC=35 Goroutines=17
+heap budget sample: phase=abort maxHeapBytes=1 HeapAlloc=3412552 HeapInuse=5095424 HeapSys=52887552 NumGC=35 Goroutines=18
+m7h goroutine-profile handler entered: at=2026-11-27T12:58:31.960092714Z method=GET
+m7h goroutine-profile handler phase=authorization-complete at=2026-11-27T12:58:31.960109547Z elapsed=3.458µs allowed=true
+m7h goroutine-profile handler phase=profile-write-start at=2026-11-27T12:58:31.960152256Z
+m7h goroutine-profile handler phase=profile-write-complete at=2026-11-27T12:58:31.964550422Z elapsed=4.401083ms failed=false
+m7h goroutine profile saved locally: path=/tmp/hami-m7h-profile-test-1211548011/goroutine.pprof bytes=3107
+m7h goroutine-profile handler entered: at=2026-11-27T12:58:31.964751006Z method=GET
+m7h goroutine-profile handler phase=authorization-complete at=2026-11-27T12:58:31.964763422Z elapsed=3.084µs allowed=true
+heap budget armed: maxHeapBytes=1073741824 pollInterval=100ms sampleInterval=1s
+heap budget sample: phase=start maxHeapBytes=1073741824 HeapAlloc=4032136 HeapInuse=5693440 HeapSys=52461568 NumGC=54 Goroutines=19
+mutex profile written: /root/.cache/go-tmp/TestMutexProfileEnvWiring3749370477/001/mutex.16038.pprof delay=10ms window=50ms samples=21
+hami SFU egress shards: count=0
+hami SFU egress shards: count=0
+--- FAIL: TestClusterDWHIPFFmpegEncoderAttempt (0.05s)
+    session_resume_test.go:74: ffmpeg whip exited early: exit status 1 (offers=0)
+    session_resume_test.go:81: ffmpeg WHIP encoder never completed an offer/answer handshake (offers=0)
+hami SFU egress shards: count=0
+part3 TURN relay pair: publisher pair=candidate:mBUxrRw3eE9acjPLrUbBt2W0t6c/W6ed-candidate:ObHdK4/XdnDfOiA7Ir5Wcf5EAaN6vqYU state=succeeded local=127.0.0.1:53446/udp/relay remote=127.0.0.1:46389/udp/host
+part3 TURN relay pair: viewer pair=candidate:6iAsmezZLpOOgMvsDuL7l+x4orMCcvI7-candidate:UEE4yemvkyicm2tAG5gKdYPrSsN0LpfR state=succeeded local=127.0.0.1:58211/udp/relay remote=127.0.0.1:46389/udp/host
+FAIL
+FAIL	github.com/kn33r0s3/hami-media	48.916s
+?   	github.com/kn33r0s3/hami-media/cmd/hami-packager	[no test files]
+?   	github.com/kn33r0s3/hami-media/deploy/launch	[no test files]
+ok  	github.com/kn33r0s3/hami-media/outputs	1.014s
+FAIL

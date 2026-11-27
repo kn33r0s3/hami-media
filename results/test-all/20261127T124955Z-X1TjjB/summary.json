@@ -1,0 +1,54 @@
+{
+  "code_sha256_main_go": "7c3a52f9aeae3f33762761ad00d5f5b1841f337c63d531f395a490e1d87e90f1",
+  "environment": {
+    "go_version": "go version go1.27.4 darwin/arm64",
+    "platform": "macOS-26.6.2-arm64-arm-64bit"
+  },
+  "image_hash": "n/a-native",
+  "parameters": {
+    "fuzz_time_per_target": "10s",
+    "runner": "scripts/test-all.sh"
+  },
+  "raw_log_sha256": {
+    "fuzz-FuzzParseRTCP.txt": "05536decf4d6b293bf0519f853bbfb878cdcdcb3b1c7fe6bc1a86ee0312a74d7",
+    "fuzz-FuzzParseRTP.txt": "013ad70f52c4bf735cb5a7e082df3091ee2f7e961d89f2fb5f54cb8474e0cde5",
+    "fuzz-FuzzParseSDP.txt": "687caa057396216b5aa469723529defe803bfa58e8d1b6f99490f52ac9e191e8",
+    "fuzz-FuzzSignalingJSON.txt": "dd31c839de5b8106abfe395851437df2cfbf73a6c5f2a637bd5d8eb1fc1eeee1",
+    "leak.txt": "ff7a8b0ed3336ed838eefb6e4c0249e49c2680193362347293e057baa07a5812",
+    "nack.txt": "2f4e4def2584c2e8e28958bca26cb76adb7b58ff55e8766fbdd63e76f458e9a8",
+    "race.txt": "a08003b457b47a79935ad7b8d28311ff1548b69f9360fd2618f64c0e783f86ed",
+    "unit.txt": "ff5af944fe5179597b4ff917cdc6019d23661c091d176b817b80c61d9ff7627a",
+    "vet.txt": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "raw_logs": [
+    "fuzz-FuzzParseRTCP.txt",
+    "fuzz-FuzzParseRTP.txt",
+    "fuzz-FuzzParseSDP.txt",
+    "fuzz-FuzzSignalingJSON.txt",
+    "leak.txt",
+    "nack.txt",
+    "race.txt",
+    "unit.txt",
+    "vet.txt"
+  ],
+  "schema": "hami-media-test-all/v1",
+  "source_manifest_sha256": "f2075c83955cc8f621f794a37bc710cb2031098e30bacbe0badedfe5e1da15d2",
+  "started_at_utc": "2026-11-27T12:49:55+00:00",
+  "status": "PASS",
+  "steps": {
+    "fuzz:FuzzParseRTCP": "PASS",
+    "fuzz:FuzzParseRTP": "PASS",
+    "fuzz:FuzzParseSDP": "PASS",
+    "fuzz:FuzzSignalingJSON": "PASS",
+    "go_vet": "PASS",
+    "gofmt": "PASS",
+    "leak_scan": "PASS",
+    "nack_carve_out": "PASS",
+    "overall": "PASS",
+    "race": "PASS",
+    "unit_and_integration": "PASS"
+  },
+  "trial_ids": [
+    "20261127T124955Z-X1TjjB"
+  ]
+}

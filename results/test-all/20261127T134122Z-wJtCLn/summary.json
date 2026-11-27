@@ -1,0 +1,54 @@
+{
+  "code_sha256_main_go": "7c3a52f9aeae3f33762761ad00d5f5b1841f337c63d531f395a490e1d87e90f1",
+  "environment": {
+    "go_version": "go version go1.27.4 darwin/arm64",
+    "platform": "macOS-26.6.2-arm64-arm-64bit"
+  },
+  "image_hash": "n/a-native",
+  "parameters": {
+    "fuzz_time_per_target": "10s",
+    "runner": "scripts/test-all.sh"
+  },
+  "raw_log_sha256": {
+    "fuzz-FuzzParseRTCP.txt": "341580a7abdea31fbb6921bd9e40e7da7faa84bd8638ab9db7099291848ff4c1",
+    "fuzz-FuzzParseRTP.txt": "2018af5ed6bd31e27a281689ab4c955386ac499cc9fec9a2d0f41ee10aa7f9a5",
+    "fuzz-FuzzParseSDP.txt": "5666e1a589c8dff52bd53bbc2c165f245fc371d3dc8321dbaf09fafcf18dd268",
+    "fuzz-FuzzSignalingJSON.txt": "6869fb1482c1b0608a9b1476a2c7f2e11db5621aafdbac8beeb53ac1041c3b30",
+    "leak.txt": "3456aae9dc9ffd9799167173c2a5d4fa6a921275cc9a22df112b83bd8a7e19e6",
+    "nack.txt": "0a6cb151796c50cfc3e71a186584892007cfd827123c83640cb8a11e3c4836ed",
+    "race.txt": "90996b0dc31f0327e85dd03e6ebd4637f585ebc5406a955160ae950e68270ca5",
+    "unit.txt": "86ffa2484b46fbf620310d3f1bee4cad636fb37936d8c1b644e1bb32e3a9663c",
+    "vet.txt": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "raw_logs": [
+    "fuzz-FuzzParseRTCP.txt",
+    "fuzz-FuzzParseRTP.txt",
+    "fuzz-FuzzParseSDP.txt",
+    "fuzz-FuzzSignalingJSON.txt",
+    "leak.txt",
+    "nack.txt",
+    "race.txt",
+    "unit.txt",
+    "vet.txt"
+  ],
+  "schema": "hami-media-test-all/v1",
+  "source_manifest_sha256": "49740f25f1a690ea95476fc6e8ae93b6564f8b7ed9c409823ce606509df7beaf",
+  "started_at_utc": "2026-11-27T13:41:22+00:00",
+  "status": "FAIL",
+  "steps": {
+    "fuzz:FuzzParseRTCP": "PASS",
+    "fuzz:FuzzParseRTP": "PASS",
+    "fuzz:FuzzParseSDP": "PASS",
+    "fuzz:FuzzSignalingJSON": "PASS",
+    "go_vet": "PASS",
+    "gofmt": "PASS",
+    "leak_scan": "PASS",
+    "nack_carve_out": "PASS",
+    "overall": "FAIL",
+    "race": "PASS",
+    "unit_and_integration": "FAIL"
+  },
+  "trial_ids": [
+    "20261127T134122Z-wJtCLn"
+  ]
+}

@@ -1,0 +1,54 @@
+{
+  "code_sha256_main_go": "7c3a52f9aeae3f33762761ad00d5f5b1841f337c63d531f395a490e1d87e90f1",
+  "environment": {
+    "go_version": "go version go1.26.11 linux/arm64",
+    "platform": "Linux-7.0.12-linuxkit-aarch64-with-glibc2.36"
+  },
+  "image_hash": "n/a-native",
+  "parameters": {
+    "fuzz_time_per_target": "10s",
+    "runner": "scripts/test-all.sh"
+  },
+  "raw_log_sha256": {
+    "fuzz-FuzzParseRTCP.txt": "ba268c35ce364f845fb3df1a819501f8624bf72a5dda18a8daf861ad4318dc5a",
+    "fuzz-FuzzParseRTP.txt": "6540b1fd910c5e2d46cc49d20c9deb72cd4aca61b9cc60504ff612b15fa1fd2c",
+    "fuzz-FuzzParseSDP.txt": "3a52ac1a7dfe6406bf5137a167d26ea09fa676c60538d327b29af72f9e652bd6",
+    "fuzz-FuzzSignalingJSON.txt": "101aa20914b48dca4ac43d2145b988167921a6224e3f52e2c5e2431a63396d74",
+    "leak.txt": "ff7a8b0ed3336ed838eefb6e4c0249e49c2680193362347293e057baa07a5812",
+    "nack.txt": "9d64718d3f7bb2ba042a90f0435606f36ad9b445535cc59289a1648b03d4ce53",
+    "race.txt": "cb9f155c8381cd85062af81a0dd0fa60185bd5643fb6f5d3ee24bd666a7ff5a0",
+    "unit.txt": "0d5347198d05e184020d8a44fa4bb253646bfaaa6b5af5dba3696bb6d482fa6f",
+    "vet.txt": "15c1c45fbf8ae6914870418bfcba1b08b404154b658f89d540788ed868ba53f7"
+  },
+  "raw_logs": [
+    "fuzz-FuzzParseRTCP.txt",
+    "fuzz-FuzzParseRTP.txt",
+    "fuzz-FuzzParseSDP.txt",
+    "fuzz-FuzzSignalingJSON.txt",
+    "leak.txt",
+    "nack.txt",
+    "race.txt",
+    "unit.txt",
+    "vet.txt"
+  ],
+  "schema": "hami-media-test-all/v1",
+  "source_manifest_sha256": "f2075c83955cc8f621f794a37bc710cb2031098e30bacbe0badedfe5e1da15d2",
+  "started_at_utc": "2026-11-27T12:57:09+00:00",
+  "status": "FAIL",
+  "steps": {
+    "fuzz:FuzzParseRTCP": "PASS",
+    "fuzz:FuzzParseRTP": "PASS",
+    "fuzz:FuzzParseSDP": "PASS",
+    "fuzz:FuzzSignalingJSON": "PASS",
+    "go_vet": "PASS",
+    "gofmt": "PASS",
+    "leak_scan": "PASS",
+    "nack_carve_out": "PASS",
+    "overall": "FAIL",
+    "race": "FAIL",
+    "unit_and_integration": "FAIL"
+  },
+  "trial_ids": [
+    "20261127T125709Z-be6Ls8"
+  ]
+}

@@ -1,0 +1,54 @@
+{
+  "code_sha256_main_go": "7c3a52f9aeae3f33762761ad00d5f5b1841f337c63d531f395a490e1d87e90f1",
+  "environment": {
+    "go_version": "go version go1.27.4 darwin/arm64",
+    "platform": "macOS-26.6.2-arm64-arm-64bit"
+  },
+  "image_hash": "n/a-native",
+  "parameters": {
+    "fuzz_time_per_target": "10s",
+    "runner": "scripts/test-all.sh"
+  },
+  "raw_log_sha256": {
+    "fuzz-FuzzParseRTCP.txt": "1caba7dd5576ec60cda006a58ac87f2d3b1bd1afac84b3dd5c9026e276ae7aee",
+    "fuzz-FuzzParseRTP.txt": "a7ecc5fa526507df1628b7dd66ca2fe039d93d0dc389008e3694526b6bd38622",
+    "fuzz-FuzzParseSDP.txt": "4638380e196a9754477ff631ecf1772e345b71e9b728a50fdb2b6e631134b2d5",
+    "fuzz-FuzzSignalingJSON.txt": "dade9388d333ab5cc2d104635ce663509859f90c79b8752cd92ae4f1b160200f",
+    "leak.txt": "3456aae9dc9ffd9799167173c2a5d4fa6a921275cc9a22df112b83bd8a7e19e6",
+    "nack.txt": "0336c717c5f461610a180e927ab97c6b54d96b9adbdef0e9cb5b2e7c459aa866",
+    "race.txt": "fa876452f2af0a002321e986a75c14913f8d7117eddae16ca1f9fc2d8a756ee4",
+    "unit.txt": "15bfa463b650cf76dd9f54c44503af0807a6864d837547e647378fd99dfacb1b",
+    "vet.txt": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "raw_logs": [
+    "fuzz-FuzzParseRTCP.txt",
+    "fuzz-FuzzParseRTP.txt",
+    "fuzz-FuzzParseSDP.txt",
+    "fuzz-FuzzSignalingJSON.txt",
+    "leak.txt",
+    "nack.txt",
+    "race.txt",
+    "unit.txt",
+    "vet.txt"
+  ],
+  "schema": "hami-media-test-all/v1",
+  "source_manifest_sha256": "9dd309804088e7a0fc976d218eeda6b4727ac6c365c72b48644fcd430a1abef7",
+  "started_at_utc": "2026-11-27T13:45:25+00:00",
+  "status": "PASS",
+  "steps": {
+    "fuzz:FuzzParseRTCP": "PASS",
+    "fuzz:FuzzParseRTP": "PASS",
+    "fuzz:FuzzParseSDP": "PASS",
+    "fuzz:FuzzSignalingJSON": "PASS",
+    "go_vet": "PASS",
+    "gofmt": "PASS",
+    "leak_scan": "PASS",
+    "nack_carve_out": "PASS",
+    "overall": "PASS",
+    "race": "PASS",
+    "unit_and_integration": "PASS"
+  },
+  "trial_ids": [
+    "20261127T134525Z-rgbswD"
+  ]
+}

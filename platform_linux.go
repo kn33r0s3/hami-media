@@ -56,16 +56,9 @@ func readDeviceProfilePlatform(profile *deviceProfile) error {
 	if err != nil {
 		return fmt.Errorf("read /proc/cpuinfo: %w", err)
 	}
-	for _, line := range strings.Split(string(cpuinfo), "\n") {
-		name, rest, found := strings.Cut(line, ":")
-		if !found || strings.TrimSpace(name) != "model name" {
-			continue
-		}
-		profile.CPUModel = strings.TrimSpace(rest)
-		break
-	}
+	profile.CPUModel = linuxCPUModel(string(cpuinfo))
 	if profile.CPUModel == "" {
-		return fmt.Errorf("/proc/cpuinfo has no model name key")
+		return fmt.Errorf("/proc/cpuinfo has no identifiable CPU model")
 	}
 	release, err := os.ReadFile("/proc/sys/kernel/osrelease")
 	if err != nil {
@@ -99,6 +92,26 @@ func readDeviceProfilePlatform(profile *deviceProfile) error {
 	}
 	profile.UDPSendBufferBytes = int(wmemMax)
 	return nil
+}
+
+func linuxCPUModel(cpuinfo string) string {
+	fields := make(map[string]string)
+	for _, line := range strings.Split(cpuinfo, "\n") {
+		name, rest, found := strings.Cut(line, ":")
+		if !found {
+			continue
+		}
+		fields[strings.TrimSpace(name)] = strings.TrimSpace(rest)
+	}
+	for _, key := range []string{"model name", "Hardware", "Processor"} {
+		if model := strings.TrimSpace(fields[key]); model != "" {
+			return model
+		}
+	}
+	if architecture := strings.TrimSpace(fields["CPU architecture"]); architecture != "" {
+		return "ARM64 architecture " + architecture
+	}
+	return ""
 }
 
 // readProcSysUint64 reads one /proc/sys value as an unsigned integer.

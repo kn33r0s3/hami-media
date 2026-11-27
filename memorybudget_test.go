@@ -157,7 +157,11 @@ func TestPerViewerMemoryBudgetMeasured(t *testing.T) {
 		samples = append(samples, heapAllocAfterGC())
 	}
 	fullHeap := medianUint64(samples)
-	inFlightPerViewer := float64(fullHeap-heaps[len(heaps)-1]) / float64(len(subscriptions))
+	inFlightDelta := int64(fullHeap) - int64(heaps[len(heaps)-1])
+	if inFlightDelta < 0 {
+		inFlightDelta = 0
+	}
+	inFlightPerViewer := float64(inFlightDelta) / float64(len(subscriptions))
 	t.Logf("in-flight: full queues add %.0f bytes/viewer (heap %d -> %d)", inFlightPerViewer, heaps[len(heaps)-1], fullHeap)
 	if inFlightPerViewer > 500_000 {
 		t.Fatalf("in-flight queue cost %.0f bytes/viewer exceeds the 500,000 B estimate", inFlightPerViewer)

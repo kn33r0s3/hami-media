@@ -1,0 +1,12 @@
+trial_id	20261127T125709Z-be6Ls8
+leak_scan	PASS
+gofmt	PASS
+go_vet	PASS
+unit_and_integration	FAIL
+nack_carve_out	PASS
+race	FAIL
+fuzz:FuzzParseSDP	PASS
+fuzz:FuzzParseRTP	PASS
+fuzz:FuzzParseRTCP	PASS
+fuzz:FuzzSignalingJSON	PASS
+overall	FAIL
