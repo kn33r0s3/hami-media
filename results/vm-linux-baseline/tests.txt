@@ -1,0 +1,27 @@
+== leak scan ==
+leak scan: PASS
+== gofmt ==
+gofmt: PASS
+== go vet ==
+go vet: PASS
+== unit + integration (go test) ==
+unit: FAIL
+--- FAIL: TestClusterDWHIPFFmpegEncoderAttempt (0.00s)
+== NACK loss test (tagged carve-out, see docs/nack-test-carve-out.md) ==
+nack loss test: PASS
+== race (go test -race) ==
+race: FAIL
+--- FAIL: TestClusterDWHIPFFmpegEncoderAttempt (0.00s)
+== fuzz smoke ==
+--- FuzzParseSDP ---
+fuzz FuzzParseSDP: PASS
+--- FuzzParseRTP ---
+fuzz FuzzParseRTP: PASS
+--- FuzzParseRTCP ---
+fuzz FuzzParseRTCP: PASS
+--- FuzzSignalingJSON ---
+fuzz FuzzSignalingJSON: PASS
+== summary ==
+test-all: FAIL — failing tests: TestClusterDWHIPFFmpegEncoderAttempt 
+test summary written: /src/results/test-all/20261127T150332Z-6niqBo/summary.json
+test-all evidence: results/test-all/20261127T150332Z-6niqBo

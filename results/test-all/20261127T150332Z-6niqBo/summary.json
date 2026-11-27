@@ -1,0 +1,54 @@
+{
+  "code_sha256_main_go": "7c3a52f9aeae3f33762761ad00d5f5b1841f337c63d531f395a490e1d87e90f1",
+  "environment": {
+    "go_version": "go version go1.26.11 linux/arm64",
+    "platform": "Linux-7.0.12-linuxkit-aarch64-with-glibc2.36"
+  },
+  "image_hash": "n/a-native",
+  "parameters": {
+    "fuzz_time_per_target": "10s",
+    "runner": "scripts/test-all.sh"
+  },
+  "raw_log_sha256": {
+    "fuzz-FuzzParseRTCP.txt": "8e2ca4aefdc669c630a5d1f416f3e06aece8adcbec7083dfe3e5d27d90fb1d95",
+    "fuzz-FuzzParseRTP.txt": "cadf9a3b9c508f9002930fd3acbeca5795c9534f384646cdf756823c991bd179",
+    "fuzz-FuzzParseSDP.txt": "c4594c15a6b3eafffb145ed594740cf89103672b328036c29f56e04560904e68",
+    "fuzz-FuzzSignalingJSON.txt": "9fe01512d070a95e920aec7cce43892286b8a172d04d2fabc3fa178e73dd9ebf",
+    "leak.txt": "3456aae9dc9ffd9799167173c2a5d4fa6a921275cc9a22df112b83bd8a7e19e6",
+    "nack.txt": "837e5280281e38a561ca92bf2509c24334dfd33c5ce82bd22e480795f3932632",
+    "race.txt": "3b32c3f4040459058b5fac17028526e1d070bc59138c26f2bf08fed6c9bae228",
+    "unit.txt": "e6c08bc373a366cdab8b7a42739212309eb284a4b89b40749f21cb6125330010",
+    "vet.txt": "7ecb71216e03762bb77e85393e3a554c0cddc92e0b7e97460b8cbc7facfdce0d"
+  },
+  "raw_logs": [
+    "fuzz-FuzzParseRTCP.txt",
+    "fuzz-FuzzParseRTP.txt",
+    "fuzz-FuzzParseSDP.txt",
+    "fuzz-FuzzSignalingJSON.txt",
+    "leak.txt",
+    "nack.txt",
+    "race.txt",
+    "unit.txt",
+    "vet.txt"
+  ],
+  "schema": "hami-media-test-all/v1",
+  "source_manifest_sha256": "a6cf494ae58143908fda6b63ff0c13c4f7919e5d89711228e259c7e645ee3946",
+  "started_at_utc": "2026-11-27T15:03:32+00:00",
+  "status": "FAIL",
+  "steps": {
+    "fuzz:FuzzParseRTCP": "PASS",
+    "fuzz:FuzzParseRTP": "PASS",
+    "fuzz:FuzzParseSDP": "PASS",
+    "fuzz:FuzzSignalingJSON": "PASS",
+    "go_vet": "PASS",
+    "gofmt": "PASS",
+    "leak_scan": "PASS",
+    "nack_carve_out": "PASS",
+    "overall": "FAIL",
+    "race": "FAIL",
+    "unit_and_integration": "FAIL"
+  },
+  "trial_ids": [
+    "20261127T150332Z-6niqBo"
+  ]
+}

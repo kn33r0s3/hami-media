@@ -1,0 +1,8 @@
+fuzz: elapsed: 0s, gathering baseline coverage: 0/3 completed
+fuzz: elapsed: 0s, gathering baseline coverage: 3/3 completed, now fuzzing with 10 workers
+fuzz: elapsed: 3s, execs: 167549 (55828/sec), new interesting: 32 (total: 35)
+fuzz: elapsed: 6s, execs: 351310 (61259/sec), new interesting: 35 (total: 38)
+fuzz: elapsed: 9s, execs: 573576 (74093/sec), new interesting: 35 (total: 38)
+fuzz: elapsed: 10s, execs: 633571 (54381/sec), new interesting: 37 (total: 40)
+PASS
+ok  	github.com/kn33r0s3/hami-media	10.109s

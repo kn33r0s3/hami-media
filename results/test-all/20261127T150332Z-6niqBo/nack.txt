@@ -1,0 +1,4 @@
+ok  	github.com/kn33r0s3/hami-media	11.293s
+?   	github.com/kn33r0s3/hami-media/cmd/hami-packager	[no test files]
+?   	github.com/kn33r0s3/hami-media/deploy/launch	[no test files]
+ok  	github.com/kn33r0s3/hami-media/outputs	0.001s [no tests to run]

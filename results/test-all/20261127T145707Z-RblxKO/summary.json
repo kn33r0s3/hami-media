@@ -1,0 +1,54 @@
+{
+  "code_sha256_main_go": "7c3a52f9aeae3f33762761ad00d5f5b1841f337c63d531f395a490e1d87e90f1",
+  "environment": {
+    "go_version": "go version go1.27.4 darwin/arm64",
+    "platform": "macOS-26.6.2-arm64-arm-64bit"
+  },
+  "image_hash": "n/a-native",
+  "parameters": {
+    "fuzz_time_per_target": "10s",
+    "runner": "scripts/test-all.sh"
+  },
+  "raw_log_sha256": {
+    "fuzz-FuzzParseRTCP.txt": "8c4f86cdc115966fe21976eb7a8f277a701f052b0d7ec135610d6045e08bc50c",
+    "fuzz-FuzzParseRTP.txt": "21d905d25cefe4ee3cfe785753134b0cc20ef8e206f4e705316c0d647540612a",
+    "fuzz-FuzzParseSDP.txt": "0f586fe07dfed4bfa28fb5144dbe087e2907e120a6a91247a88215cd8cab86f4",
+    "fuzz-FuzzSignalingJSON.txt": "ea25e2ef9a85526c607fe021a79a628513866ed6d248049148c466ab169a9ff5",
+    "leak.txt": "3456aae9dc9ffd9799167173c2a5d4fa6a921275cc9a22df112b83bd8a7e19e6",
+    "nack.txt": "0294faa1fe86618f184e230d42d72c61aa4f94a66f788454ff14914711ee769b",
+    "race.txt": "d99afbd8b2c0eb6af5724e64d10d7001c0675f513681000d2e418ad3d78c00e3",
+    "unit.txt": "961f4c19ce084a90212253527648fa1f688bf308e765918e61050cf7b9541856",
+    "vet.txt": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "raw_logs": [
+    "fuzz-FuzzParseRTCP.txt",
+    "fuzz-FuzzParseRTP.txt",
+    "fuzz-FuzzParseSDP.txt",
+    "fuzz-FuzzSignalingJSON.txt",
+    "leak.txt",
+    "nack.txt",
+    "race.txt",
+    "unit.txt",
+    "vet.txt"
+  ],
+  "schema": "hami-media-test-all/v1",
+  "source_manifest_sha256": "a6cf494ae58143908fda6b63ff0c13c4f7919e5d89711228e259c7e645ee3946",
+  "started_at_utc": "2026-11-27T14:57:07+00:00",
+  "status": "PASS",
+  "steps": {
+    "fuzz:FuzzParseRTCP": "PASS",
+    "fuzz:FuzzParseRTP": "PASS",
+    "fuzz:FuzzParseSDP": "PASS",
+    "fuzz:FuzzSignalingJSON": "PASS",
+    "go_vet": "PASS",
+    "gofmt": "PASS",
+    "leak_scan": "PASS",
+    "nack_carve_out": "PASS",
+    "overall": "PASS",
+    "race": "PASS",
+    "unit_and_integration": "PASS"
+  },
+  "trial_ids": [
+    "20261127T145707Z-RblxKO"
+  ]
+}
